@@ -42,7 +42,6 @@
 #   * Set working chest -- target a chest at home; with a rune named Home, everything panned goes
 #     there instead of the bank. Use the bank -- back to the bank.
 #   * Rescan -- read your Account Runebook again after you add or move a rune.
-#   * How full the pack gets before it unloads: pack_pct in Setup.txt (80 = 80% of your weight, the default).
 #
 # HOW IT WORKS
 #   * Each rune: it looks for water near the rune, then walks out along the shore -- up to 150 tiles
@@ -171,9 +170,16 @@ def my_id():
 
 SETTINGS_FILE = "Setup.txt"
 SETTINGS = {}
+# WHAT THE PLAYER DOES NOT SET, THE UPDATE SETS (owner, 2026-10-16: "when we make updates to core functionality not
+# exposed to the user, they should receive that update automatically. We shouldn't ask them to edit a file."):
+# Setup.txt keeps only what the Options window sets and what the script remembers for itself. A tuning number lives
+# here, in the script, so a new version's value reaches every player; a Setup.txt line an older version wrote for it
+# is ignored and dropped at the next save.
+PACK_PCT = 80                   # the pack unloads past this share of its weight or item limit -- panning fills a find
+                                # at a time, no bursts (owner, 2026-10-16)
 DEFAULTS = {
     "orders": "1", "avoid_invasions": "1", "mark_runes": "1",
-    "pack_pct": "80", "po_path": "",     # (owner, 2026-10-16: panning fills a find at a time, no bursts)
+    "po_path": "",
     "started": "0",                 # Start pressed once: every later run skips the start screen
     "chest": "", "home_path": "",   # THE WORKING CHEST: its serial, and where the Home rune was found
     "bank_goods": "1",              # ... the bank's nuggets at its last look, "small:12,large:3" ("1": not looked yet)
@@ -196,7 +202,7 @@ def load_settings():
             for line in f:
                 if "=" in line:
                     k, _s, v = line.strip().partition("=")
-                    if k.strip():
+                    if k.strip() in DEFAULTS:   # WHAT THE PLAYER DOES NOT SET, THE UPDATE SETS
                         SETTINGS[k.strip()] = v.strip()
     except Exception:
         pass
@@ -316,7 +322,7 @@ def clear_cursor():
 
 def pack_full(pct=None):
     """Over the weight threshold (`pct`, else the setting), or the item count over the same share of the pack's limit."""
-    pct = (opt_int("pack_pct", 20, 95) if pct is None else pct) / 100.0
+    pct = (PACK_PCT if pct is None else pct) / 100.0
     try:
         if Player.MaxWeight and Player.Weight > Player.MaxWeight * pct:
             return True
@@ -2697,7 +2703,7 @@ def take_for_orders(bank, where="the bank"):
     have = dict((t, count_tier(t)) for t in TIERS)
     stock = bank_goods(bank)
     banked = dict((t, sum(int(it.Amount or 1) for it in items)) for t, items in stock.items())
-    room = Player.MaxWeight * opt_int("pack_pct", 20, 95) / 100.0 - Player.Weight
+    room = Player.MaxWeight * PACK_PCT / 100.0 - Player.Weight
     take, planned = {}, 0
     for d in sorted(deeds, reverse=True, key=lambda d: (d[1] >= d[2], stone_rate(d[3], d[2]), -(d[2] - d[1]))):
         if d[1] >= d[2]:
@@ -3473,7 +3479,7 @@ def fill_at_harry_due():
     for d in sorted([d for d in order_deeds() if d[1] < d[2]], key=to_go):
         absorb(d[3], d[2] - d[1], have)
     freed = sum((before[t] - have[t]) * GOOD_STONES[t] for t in TIERS)
-    return freed > 0 and Player.Weight - freed <= Player.MaxWeight * opt_int("pack_pct", 20, 95) / 100.0 * \
+    return freed > 0 and Player.Weight - freed <= Player.MaxWeight * PACK_PCT / 100.0 * \
         FILL_AT_HARRY_ROOM
 
 
