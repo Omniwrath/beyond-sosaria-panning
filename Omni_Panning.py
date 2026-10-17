@@ -2707,13 +2707,48 @@ def loot_in_pack():
     return out
 
 
+# EVERY MOVE IS CHECKED (2026-10-17: a player's bank was at its item limit -- it took the nuggets, which join a stack
+# already there, and bounced every gem and rough stone back into the pack, while the log said "Unloaded 2 stack(s)";
+# the pack crept to its fill line and the panner went to the bank after every sift for hours). A stack still in the
+# pack after its move was refused; a refused unload at the bank stops the run with what was refused (BANK_FULL), never
+# a loop to the banker.
+MOVE_SETTLE_MS = 500           # a refused item takes a moment to come back
+REFUSED = [[]]                 # the names of what the last move_all() could not move
+BANK_FULL = [None]             # set: the run stops, saying this
+
+
+def still_in_pack(it):
+    now = Items.FindBySerial(it.Serial)
+    return now is not None and getattr(now, "Container", None) == Player.Backpack.Serial
+
+
 def move_all(items, dest_serial):
-    moved = 0
+    """Every item into `dest_serial`: how many left the pack. REFUSED[0] names the ones still in it."""
+    moved, left = 0, []
     for it in items:
         Items.Move(it.Serial, dest_serial, -1)
         Misc.Pause(700)
-        moved += 1
+        if still_in_pack(it):
+            left.append(it)
+        else:
+            moved += 1
+    if left:
+        Misc.Pause(MOVE_SETTLE_MS)
+        left = [it for it in left if still_in_pack(it)]
+        moved = len(items) - len(left)
+    REFUSED[0] = [name_of(it) or "an item" for it in left]
     return moved
+
+
+def bank_refused(what):
+    """EVERY MOVE IS CHECKED: the bank refused something -- the run stops at the next turn of the loop, saying so."""
+    if not REFUSED[0]:
+        return False
+    names = sorted(set(REFUSED[0]))
+    BANK_FULL[0] = ("Your bank would not take %d stack(s) of %s (%s) -- it is full. Make room in your bank, then press "
+                    "Play." % (len(REFUSED[0]), what, ", ".join(names[:6]) + (" and more" if len(names) > 6 else "")))
+    log(BANK_FULL[0], HUE_BAD)
+    return True
 
 
 GOOD_STONES = {"small": 1, "medium": 2, "large": 3, "brick": 5}   # a piece's weight, high side: the take's weight cap
@@ -3079,32 +3114,30 @@ def stacks_onto(chest, it):
     return any(c.ItemID == it.ItemID and c.Hue == it.Hue for c in contents(chest))
 
 
-def into_chest_or_trash(chest):
-    """NEVER THE BANK FOR OVERFLOW (owner, 10-15 10:3x: "don't fill the bank if we have a working chest. Trash them."):
-    everything panned into the chest while it has room past its working space -- a stack that joins one already there
-    always fits -- and what would need a slot it has not got into the Trash Bag. Checks stay for the bank. The stacks
-    moved."""
-    moved, trashed = 0, []
+def into_chest(chest):
+    """NOTHING PANNED IS TRASHED (owner, 2026-10-17: "That's not acceptable." -- of a full working chest's overflow going
+    into the Trash Bag; the 10-15 rule was "don't fill the bank if we have a working chest. Trash them."): everything
+    panned into the chest while it has room past its working space -- a stack that joins one already there always fits
+    -- and what would need a slot it has not got stays in the pack for the bank (unload() goes on to it), the player
+    told once a run that the chest is full. Checks stay for the bank. (the stacks moved, the serials left for the bank)"""
+    moved, left = 0, []
     for it in [i for i in loot_in_pack() if not is_check(i)]:
         if chest_room(chest) > 0 or stacks_onto(chest, it):
             Items.Move(it.Serial, chest.Serial, -1)
             Misc.Pause(700)
-            moved += 1
             chest = Items.FindBySerial(chest.Serial) or chest
-            continue
-        bag = trash_bag()
-        if bag is None:
-            log("Your working chest is down to its working space and there is no Trash Bag -- %s stays in the pack." %
-                (name_of(it) or "an item"), HUE_BAD)
-            continue
-        Items.Move(it.Serial, bag.Serial, -1)
-        Misc.Pause(700)
-        trashed.append(name_of(it) or "?")
-    if trashed:
-        log("Your working chest is down to its working space (%d slots kept free) -- into the Trash Bag: %s." % (
-            CHEST_FREE_KEPT, ", ".join(trashed[:6]) + (" and %d more" % (len(trashed) - 6) if len(trashed) > 6 else "")),
-            HUE_BAD)
-    return moved
+            if not still_in_pack(it):
+                moved += 1
+                continue                # EVERY MOVE IS CHECKED: one the chest refused goes to the bank
+        left.append(it.Serial)
+    if left and not CHEST_FULL_SAID[0]:
+        CHEST_FULL_SAID[0] = True
+        log("Your working chest is down to its working space (%d slots kept free) -- what it has no room for goes to "
+            "the bank. Empty some of it to keep everything at home." % CHEST_FREE_KEPT, HUE_BAD)
+    return moved, left
+
+
+CHEST_FULL_SAID = [False]
 
 
 def chest_room(chest):
@@ -3255,6 +3288,7 @@ def bank_checks():
         return
     n = move_all(checks, bank.Serial)
     log("Banked %d check(s) from Harry in one stop." % n)
+    bank_refused("checks")                  # EVERY MOVE IS CHECKED
 
 
 def unload(take_orders=False):
@@ -3262,8 +3296,10 @@ def unload(take_orders=False):
     back out (THE BANK FILLS THE ORDERS). True once done."""
     key_absorb()                        # INGOT STORAGE: the gems we found go into the key, not the bank
     chest = open_working_chest() if working_chest_on() else None
+    overflow = []
     if chest is not None:
-        n = into_chest_or_trash(chest)  # THE CHECKS GO TO THE BANK; nothing else does
+        n, overflow = into_chest(chest)  # THE CHECKS GO TO THE BANK -- and NOTHING PANNED IS TRASHED: what the chest
+                                         # has no room for goes there too
         chest = Items.FindBySerial(chest.Serial) or chest
         prune_deeds(chest)              # the orders past those carried: into the chest while it has room
         if take_orders:
@@ -3271,7 +3307,7 @@ def unload(take_orders=False):
             take_for_orders(chest, "your working chest")
         log("Unloaded %d stack(s) into your working chest; the pack holds %d of %d stones." % (
             n, Player.Weight, Player.MaxWeight))
-        if not bank_stop_due(take_orders):
+        if not overflow and not bank_stop_due(take_orders):
             return True
         take_orders = take_orders and bool(SETTINGS.get("bank_goods"))
     doing("Unloading at a bank")
@@ -3280,8 +3316,10 @@ def unload(take_orders=False):
         return False
     # with the working chest just unloaded, the bank takes only the checks -- the nuggets now in the pack were taken
     # for orders and stay for Harry
-    n = move_all([it for it in loot_in_pack() if chest is None or is_check(it)], bank.Serial)
+    n = move_all([it for it in loot_in_pack() if chest is None or is_check(it) or it.Serial in overflow], bank.Serial)
     log("Unloaded %d stack(s) at the bank; the pack holds %d of %d stones." % (n, Player.Weight, Player.MaxWeight))
+    if bank_refused("what you panned"):     # EVERY MOVE IS CHECKED
+        return False
     if chest is None and not working_chest_on() and extra_mode() == "store":
         Misc.Pause(600)
         prune_deeds(Player.Bank or bank)   # EXTRA ORDERS: the bank stores them, and its best come along
@@ -4398,6 +4436,9 @@ def run():
     fails = 0
     while True:
         tracker_tick()
+        if BANK_FULL[0]:                # EVERY MOVE IS CHECKED
+            log("Stopping: %s" % BANK_FULL[0], HUE_BAD)
+            return
         read_broadcasts()
         if ROUTE_STALE[0]:
             load_route()
