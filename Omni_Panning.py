@@ -39,6 +39,9 @@
 #   * Fill Gold Panning Orders at Harry -- on by default; needs the PO rune (see above).
 #   * Mark new runes where gold turns up -- on by default; only ever in a folder named Panning.
 #   * Stay out of Town Invasions -- on by default.
+#   * Orders past the 10 carried -- store them in your working chest or bank until it is 80% full,
+#     then stop asking Harry for more (the default); or put the least worth filling into a Trash
+#     Bag in your pack; or stop asking Harry once 10 are carried.
 #   * Set working chest -- target a chest at home; with a rune named Home, everything panned goes
 #     there instead of the bank. Use the bank -- back to the bank.
 #   * Rescan -- read your Account Runebook again after you add or move a rune.
@@ -62,7 +65,8 @@
 #     every order it can FINISH (never a partial) and gives the next. The orders paying the most
 #     rough stone a nugget go first. Harry hands out a new order every 30 minutes.
 #   * Long walks: with an ethereal mount statue in the pack it rides any walk over 40 tiles.
-#   * Safety: lost hits, poison, or a red or orange mobile near, and it leaves for the next rune;
+#   * Safety: lost hits, poison, a red or orange mobile near, a red anywhere in view, or anything in
+#     view with its war mode on (it has picked a fight), and it leaves for the next rune;
 #     that spot goes on a list no panner walks within 30 tiles of again. Town Invasions start every
 #     even hour UTC in Cove, Delucia, Jhelom, Minoc,
 #     Moonglow, Skara Brae, Umbra or Yew: from shortly before each start it keeps out of all eight
@@ -184,6 +188,7 @@ DEFAULTS = {
     "chest": "", "home_path": "",   # THE WORKING CHEST: its serial, and where the Home rune was found
     "bank_goods": "1",              # ... the bank's nuggets at its last look, "small:12,large:3" ("1": not looked yet)
     "eth_bank": "",                 # THE ETHEREAL'S BANK, known in advance: "1" unlocked, "0" not, "" never read
+    "extra_orders": "store",        # EXTRA ORDERS: "store", "trash" or "stop" -- see EXTRA_ORDER_CHOICES
 }
 
 
@@ -962,6 +967,14 @@ PAN_RUNE_GAP = 20              # a new rune is marked this far from every other
 PAN_MAX_RUNES = 60
 DANGER_TILES = 12
 HOSTILE_NOTORIETIES = (5, 6)   # orange and red
+# A RED ANYWHERE IN VIEW, AND ANY AGGRO (2026-10-17). A panner died to a red NPC that came into view 24 tiles off, walked
+# in for a minute, then turned on it: its war mode came on, it ran in, and 3 seconds later the deadliest poison and six
+# blows killed it -- "hostile nearby" only looked within DANGER_TILES. Now a red anywhere in view is reason to leave, and
+# so is anything that turns on us: a mobile of AGGRO_NOTORIETIES (grey to red -- never a blue, a vendor or a guard) in war
+# mode anywhere in view. An idle creature is not in war mode; one that goes into it has picked a fight, and the panner
+# is gone before it reaches us.
+RED_NOTORIETY = 6
+AGGRO_NOTORIETIES = (3, 4, 5, 6)
 PANS_KEPT = 2
 PAN_INGOTS = 4
 INGOTS_BOUGHT = 16
@@ -1491,9 +1504,28 @@ def hostiles_near():
     return list(Mobiles.ApplyFilter(f) or [])
 
 
+def reds_in_view():
+    """Every red mobile in view, at any distance -- A RED ANYWHERE IN VIEW."""
+    f = Mobiles.Filter()
+    f.Enabled = True
+    f.RangeMax = -1
+    f.Notorieties.Add(RED_NOTORIETY)
+    return [m for m in Mobiles.ApplyFilter(f) or [] if m.Serial != Player.Serial]
+
+
+def aggro_in_view():
+    """Every grey-to-red mobile in view in war mode -- ANY AGGRO."""
+    f = Mobiles.Filter()
+    f.Enabled = True
+    f.RangeMax = -1
+    for n in AGGRO_NOTORIETIES:
+        f.Notorieties.Add(n)
+    return [m for m in Mobiles.ApplyFilter(f) or [] if m.Serial != Player.Serial and getattr(m, "WarMode", False)]
+
+
 # NO FIGHTING, NO DYING: this script has no defense and no death recovery, so it never stays where anything has turned
-# on it -- not an option. Any hit, poison, or a red or orange mobile near while panning: away at once, and that rune is
-# never panned again (BLACKLIST_FILE).
+# on it -- not an option. Any hit, poison, a red or orange mobile near, a red anywhere in view, or anything in view in
+# war mode while panning: away at once, and that rune is never panned again (BLACKLIST_FILE).
 AGGRO = [None]                 # what set us off this visit -- once set, the visit is over
 LAST_HITS = [None]
 
@@ -1507,8 +1539,8 @@ def aggro_reset():
 
 
 def in_danger():
-    """Something has turned on us: hits lost since the last look, poison, or a red or orange mobile near. Kept for the
-    rest of the visit."""
+    """Something has turned on us: hits lost since the last look, poison, a red or orange mobile near, a red anywhere in
+    view, or anything in view in war mode. Kept for the rest of the visit."""
     if AGGRO[0]:
         return True
     why = None
@@ -1525,6 +1557,15 @@ def in_danger():
         found = hostiles_near()
         if found:
             why = "hostile nearby (%s)" % ", ".join(name_of(mob) or "?" for mob in found[:3])
+    if why is None:
+        found = reds_in_view()
+        if found:
+            why = "a red in view (%s, %d tiles)" % (name_of(found[0]) or "?", Player.DistanceTo(found[0]))
+    if why is None:
+        found = aggro_in_view()
+        if found:
+            why = "%s turned on us (war mode, %d tiles)" % (name_of(found[0]) or "something",
+                                                           Player.DistanceTo(found[0]))
     if why:
         AGGRO[0] = why
         log("%s%s -- leaving." % (why[:1].upper(), why[1:]), HUE_BAD)
@@ -2128,7 +2169,7 @@ def fill_while_sifting(t0, visit):
         return None
     FILL_WHILE_SIFTING[0] = False
     have = goods()
-    deed = next((d for d in sorted(order_deeds(), key=to_go) if d[1] < d[2] and have.get(d[3])), None)
+    deed = next((d for d in sorted(order_deeds(), key=fill_first) if d[1] < d[2] and have.get(d[3])), None)
     if deed is None:
         return None
     Misc.Pause(max(0, int((t0 + SIFT_FILL_AT_S - time.time()) * 1000)))
@@ -3227,6 +3268,9 @@ def unload(take_orders=False):
     # for orders and stay for Harry
     n = move_all([it for it in loot_in_pack() if chest is None or is_check(it)], bank.Serial)
     log("Unloaded %d stack(s) at the bank; the pack holds %d of %d stones." % (n, Player.Weight, Player.MaxWeight))
+    if chest is None and not working_chest_on() and extra_mode() == "store":
+        Misc.Pause(600)
+        prune_deeds(Player.Bank or bank)   # EXTRA ORDERS: the bank stores them, and its best come along
     if take_orders:
         Misc.Pause(600)
         take_for_orders(Player.Bank or bank)
@@ -3292,6 +3336,54 @@ DEEDS_KEPT = 10               # THE BEST ORDERS KEPT: the orders carried past th
                               # first, go into the Trash Bag (a deed whose words were not read is never trashed)
 TRASH_BAG_ID = 0x09B2
 LAST_ASK = [0.0]
+# EXTRA ORDERS (owner, 2026-10-17: "make the default storing extras in bank or assigned chest up to 80% capacity and
+# then stop collecting if that storage fills" -- a player's pack filled with orders: Harry gave one every half hour,
+# and with no Trash Bag in the pack nothing took the ones past the DEEDS_KEPT carried). An Options choice:
+#   store -- the extras go into the working chest, else the bank, while it is under STORE_PCT of its item limit; the
+#            best of the carried and the stored come along. Storage at STORE_PCT: no new order is asked.
+#   trash -- the extras, the least worth filling first, go into a Trash Bag in the pack (none: no new order is asked).
+#   stop  -- DEEDS_KEPT carried, and no new order is asked.
+# An order with nuggets in it, or one the player brought, is never thrown away, whatever the choice; Harry's half hour
+# goes on regardless -- the finished orders are turned in, and the ask comes once there is room again.
+EXTRA_ORDER_CHOICES = (("store", 110, "Store them in your working chest or bank (to 80% full), then stop asking"),
+                       ("trash", 111, "Put the least worth filling into a Trash Bag in your pack"),
+                       ("stop", 112, "Stop asking Harry for orders"))
+STORE_PCT = 80
+STORE_ROOM = [None]            # the store's room for orders at its last look, below STORE_PCT (None: not looked yet)
+CONTENTS_RE = re.compile(r"(\d+)\s*/\s*(\d+)\s*items", re.I)
+ROOM_SAID = [None]
+
+
+def extra_mode():
+    mode = SETTINGS.get("extra_orders") or "store"
+    return mode if mode in [c[0] for c in EXTRA_ORDER_CHOICES] else "store"
+
+
+def store_room(container):
+    """The orders `container` takes before it reaches STORE_PCT of its item limit -- the limit and the count its own
+    properties say ("Contents: 40/125 Items"), else CHEST_ITEM_LIMIT and its top-level items."""
+    count, limit = len(list(getattr(container, "Contains", None) or [])), CHEST_ITEM_LIMIT
+    try:
+        Items.WaitForProps(container.Serial, 1500)
+        m = CONTENTS_RE.search(" | ".join(Items.GetPropStringList(container.Serial) or []))
+        if m:
+            count, limit = int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    return max(0, int(limit * STORE_PCT // 100) - count)
+
+
+def order_room():
+    """EXTRA ORDERS: room for one more order -- fewer than DEEDS_KEPT carried, or a place for the extras by the
+    player's choice."""
+    if len(order_deeds()) < DEEDS_KEPT:
+        return True
+    mode = extra_mode()
+    if mode == "trash":
+        return trash_bag() is not None
+    if mode == "store":
+        return STORE_ROOM[0] is None or STORE_ROOM[0] > 0
+    return False
 
 
 def load_last_ask():
@@ -3374,7 +3466,7 @@ def carry_rank(deeds, stock):
     for d in deeds:
         if d[1] < d[2] and d[3] in FIELD_TIERS:
             best = field.get(d[3])
-            if best is None or (d[2] - d[1], -stone_rate(d[3], d[2])) < (best[2] - best[1], -stone_rate(best[3], best[2])):
+            if best is None or fill_first(d) < fill_first(best):   # FINISH WHAT'S STARTED
                 field[d[3]] = d
     slots = set(d[0].Serial for d in field.values())
     return sorted(deeds, reverse=True, key=lambda d: (
@@ -3416,7 +3508,7 @@ def field_fill():
         return False
     filled = []
     open_deeds = [d for d in order_deeds() if d[1] < d[2]]
-    for deed, got, wanted, tier in sorted(open_deeds, key=to_go):
+    for deed, got, wanted, tier in sorted(open_deeds, key=fill_first):
         now = fill_deed(deed, got, wanted, tier)
         if now > got:
             filled.append("%d %s (%d / %d)" % (now - got, tier, now, wanted))
@@ -3476,7 +3568,7 @@ def fill_at_harry_due():
         return False                    # on the half hour THE BULK TURN-IN goes to Harry anyway; NO TRIP INTO THE HOUR
     have = dict((t, count_tier(t)) for t in TIERS)
     before = dict(have)
-    for d in sorted([d for d in order_deeds() if d[1] < d[2]], key=to_go):
+    for d in sorted([d for d in order_deeds() if d[1] < d[2]], key=fill_first):
         absorb(d[3], d[2] - d[1], have)
     freed = sum((before[t] - have[t]) * GOOD_STONES[t] for t in TIERS)
     return freed > 0 and Player.Weight - freed <= Player.MaxWeight * PACK_PCT / 100.0 * \
@@ -3493,7 +3585,7 @@ def fill_at_harry():
     doing("Filling orders at Harry")
     filled = []
     for deed, got, wanted, tier in sorted([d for d in order_deeds() if d[1] < d[2]],
-                                          key=to_go):
+                                          key=fill_first):
         if trade_up(tier, wanted - got, harry) <= 0:
             continue
         now = fill_deed(deed, got, wanted, tier)
@@ -3511,6 +3603,13 @@ def can_make(tier, n, stock):
         lots = TIER_LOTS.get(t)
         made = int(stock.get(t, 0)) + (made // lots if lots else 0)
     return made >= n
+
+
+def fill_first(d):
+    """FINISH WHAT'S STARTED (owner, 2026-10-17: "add the fix to focus the previous order if it's already started" -- a
+    player found three large orders begun with a couple of nuggets each: by to_go() alone, each new order nearer done
+    took the nuggets from one already begun). An order with nuggets in it first, then the closest to done."""
+    return (d[1] <= 0,) + to_go(d)
 
 
 def to_go(d):
@@ -3546,7 +3645,18 @@ def trade_up(tier, n, harry):
 
 
 def ask_order(harry):
-    """Ask Harry for an order. Asked too soon, he says when the next is ready -- the next ask waits for that."""
+    """Ask Harry for an order. Asked too soon, he says when the next is ready -- the next ask waits for that. No room
+    for one (EXTRA ORDERS): not asked, and asked again at the next half hour."""
+    if not order_room():
+        LAST_ASK[0] = time.time()
+        save_last_ask()
+        why = {"store": "your working chest or bank is %d%% full" % STORE_PCT,
+               "trash": "there is no Trash Bag in your pack", "stop": "Options say stop"}[extra_mode()]
+        if ROOM_SAID[0] != why:
+            ROOM_SAID[0] = why
+            log("No new order asked: %d carried and %s." % (len(order_deeds()), why))
+        return False
+    ROOM_SAID[0] = None
     stamp = newest_journal_timestamp()
     if not context_pick(harry, "talk"):
         return False
@@ -3577,11 +3687,16 @@ def prune_deeds(chest=None):
     wait in the pack for it between unloads; only what it has no room for is trashed."""
     deeds = order_deeds()
     kept = DEEDS_KEPT if handles_turnins() else 0    # ONE TURNS IN: a panner that does not keeps none
-    if chest is not None:
-        CHEST_ROOM_SEEN[0] = max(0, chest_room(chest))
+    mode = extra_mode()
+    if chest is not None and mode != "stop":
+        CHEST_ROOM_SEEN[0] = max(0, chest_room(chest) if mode == "trash" else store_room(chest))
         deeds = swap_with_chest(chest, deeds, kept)
+        if mode == "store":
+            STORE_ROOM[0] = CHEST_ROOM_SEEN[0]       # EXTRA ORDERS: what is left of it, after the swap
     if len(deeds) <= kept:
         return
+    if mode != "trash":
+        return                          # EXTRA ORDERS: stored at the next unload, or kept as they are
     if chest is None and working_chest_on():
         return                          # the chest takes them at the next unload
     bag = trash_bag()
@@ -3630,7 +3745,8 @@ def swap_with_chest(chest, deeds, kept):
         put += 1
     CHEST_ROOM_SEEN[0] -= put
     if taken or put:
-        log("Orders carried: %d out of your working chest, %d into it -- %d carried." % (taken, put, kept))
+        where = "your bank" if getattr(Player.Bank, "Serial", None) == chest.Serial else "your working chest"
+        log("Orders carried: %d out of %s, %d into it -- %d carried." % (taken, where, put, kept))
     return order_deeds() if taken or put else deeds
 
 
@@ -3905,16 +4021,27 @@ def settings_screen():
                 "Target a chest at home to unload into instead of the bank (needs a rune named Home).")]
         if chest:
             row.append((BTN_USE_BANK, "Use the bank", None))
-        width = EDGE_PX + max([20 + text_px(t) for t in (title, chest_text, home_text)] +
+        extra_title = "Orders past the %d carried:" % DEEDS_KEPT
+        width = EDGE_PX + max([20 + text_px(t) for t in (title, chest_text, home_text, extra_title)] +
                               [46 + text_px(c) for _k, _s, c in CHECKS] +
+                              [66 + text_px(c) for _k, _s, c in EXTRA_ORDER_CHOICES] +
                               [20 + text_px(turn_text)] +
                               [20 + sum(BUTTON_PX + text_px(l) + BUTTON_GAP_PX for _b, l, _t in row) - BUTTON_GAP_PX])
-        height = 60 + len(CHECKS) * 26 + 24 * 3 + 50 + 60
+        height = 60 + len(CHECKS) * 26 + 30 + len(EXTRA_ORDER_CHOICES) * 26 + 24 * 3 + 50 + 60
         gd = new_screen(width, height, title)
         y = 50
         for key, sid, caption in CHECKS:
             Gumps.AddCheck(gd, 20, y, 210, 211, opt(key), sid)
             Gumps.AddLabel(gd, 46, y, HUE_GOOD, caption)
+            y += 26
+        y += 4
+        Gumps.AddLabel(gd, 20, y, HUE_GOOD, extra_title)   # EXTRA ORDERS
+        y += 26
+        Gumps.AddGroup(gd, 1)
+        mode = extra_mode()
+        for key, sid, caption in EXTRA_ORDER_CHOICES:
+            Gumps.AddRadio(gd, 40, y, 208, 209, key == mode, sid)
+            Gumps.AddLabel(gd, 66, y, HUE_GOOD, caption)
             y += 26
         y += 6
         Gumps.AddLabel(gd, 20, y, HUE_GOOD, chest_text)
@@ -3933,6 +4060,9 @@ def settings_screen():
         switches = set(int(s) for s in (resp.switches or []))
         for key, sid, _c in CHECKS:
             SETTINGS[key] = "1" if sid in switches else "0"
+        picked = next((key for key, sid, _c in EXTRA_ORDER_CHOICES if sid in switches), None)
+        if picked:
+            SETTINGS["extra_orders"] = picked
         save_settings()
         if resp.buttonid == BTN_RESCAN:
             rescan()
