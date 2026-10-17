@@ -299,11 +299,25 @@ def name_of(thing):
     return n
 
 
-def pack_items():
-    try:
-        return list(Player.Backpack.Contains or [])
-    except Exception:
+CONTENTS_TRIES = 5
+
+
+def contents(container):
+    """A container's items, copied. RazorEnhanced's Contains is the client's own list, changing as items move, and a
+    copy taken while one moves in or out can throw (2026-10-17: a player's run died at its start, in ethereal_statue(),
+    with the pack changing at the banker). Tried again a moment later; [] only when every try fails."""
+    if container is None:
         return []
+    for _ in range(CONTENTS_TRIES):
+        try:
+            return list(getattr(container, "Contains", None) or [])
+        except Exception:
+            Misc.Pause(50)
+    return []
+
+
+def pack_items():
+    return contents(Player.Backpack)
 
 
 def here():
@@ -876,7 +890,7 @@ ETHEREAL_WAIT_MS = 3000
 
 def ethereal_statue():
     """The Sosarian Ethereal statue in the backpack, or None."""
-    for it in list(getattr(Player.Backpack, "Contains", None) or []):
+    for it in contents(Player.Backpack):
         if ETHEREAL_NAME in name_of(it).lower():
             return it
     return None
@@ -1956,7 +1970,7 @@ def mount_for_long_walk(x, y):
         pos = here()
         if Player.Mount or cheb(pos[0], pos[1], x, y) < MOUNT_WALK_TILES:
             return
-        statue = next((it for it in list(getattr(Player.Backpack, "Contains", None) or [])
+        statue = next((it for it in contents(Player.Backpack)
                        if MOUNT_STATUE_WORD in name_of(it).lower()), None)
         if statue is None:
             return
@@ -2708,7 +2722,7 @@ GOOD_STONES = {"small": 1, "medium": 2, "large": 3, "brick": 5}   # a piece's we
 def bank_goods(bank):
     """{tier: [stacks]} of nuggets and bricks at the top of the bank box."""
     out = {}
-    for it in list(getattr(bank, "Contains", None) or []):
+    for it in contents(bank):
         t = tier_of(name_of(it))
         if t:
             out.setdefault(t, []).append(it)
@@ -2746,7 +2760,7 @@ def take_for_orders(bank, where="the bank"):
     banked = dict((t, sum(int(it.Amount or 1) for it in items)) for t, items in stock.items())
     room = Player.MaxWeight * PACK_PCT / 100.0 - Player.Weight
     take, planned = {}, 0
-    for d in sorted(deeds, reverse=True, key=lambda d: (d[1] >= d[2], stone_rate(d[3], d[2]), -(d[2] - d[1]))):
+    for d in sorted(deeds, key=fill_first):          # ONE RULE FOR THE NEXT ORDER
         if d[1] >= d[2]:
             continue
         h, b, t = dict(have), dict(banked), dict(take)
@@ -3062,7 +3076,7 @@ def stacks_onto(chest, it):
     """True when `it` joins a stack already in the chest -- nuggets, bricks, rough stone -- and takes no new slot."""
     if not any(w in name_of(it).lower() for w in ("gold nugget", "gold brick", "rough stone")):
         return False
-    return any(c.ItemID == it.ItemID and c.Hue == it.Hue for c in list(getattr(chest, "Contains", None) or []))
+    return any(c.ItemID == it.ItemID and c.Hue == it.Hue for c in contents(chest))
 
 
 def into_chest_or_trash(chest):
@@ -3094,7 +3108,7 @@ def into_chest_or_trash(chest):
 
 
 def chest_room(chest):
-    return CHEST_ITEM_LIMIT - CHEST_FREE_KEPT - len(list(getattr(chest, "Contains", None) or []))
+    return CHEST_ITEM_LIMIT - CHEST_FREE_KEPT - len(contents(chest))
 
 
 def is_check(it):
@@ -3292,12 +3306,12 @@ def fetch_orders_for_chest(bank):
     def is_deed(it):
         low = name_of(it).lower()
         return "panning order" in low and not any(w in low for w in NEVER_MOVED)
-    top = list(getattr(bank, "Contains", None) or [])
+    top = contents(bank)
     deeds = [it for it in top if is_deed(it)]
     for bag in [it for it in top if getattr(it, "IsContainer", False)]:   # one bag deep too
         try:
             Items.WaitForContents(bag, 1500)
-            deeds.extend(it for it in list(getattr(Items.FindBySerial(bag.Serial) or bag, "Contains", None) or [])
+            deeds.extend(it for it in contents(Items.FindBySerial(bag.Serial) or bag)
                          if is_deed(it))
         except Exception:
             pass
@@ -3362,7 +3376,7 @@ def extra_mode():
 def store_room(container):
     """The orders `container` takes before it reaches STORE_PCT of its item limit -- the limit and the count its own
     properties say ("Contents: 40/125 Items"), else CHEST_ITEM_LIMIT and its top-level items."""
-    count, limit = len(list(getattr(container, "Contains", None) or [])), CHEST_ITEM_LIMIT
+    count, limit = len(contents(container)), CHEST_ITEM_LIMIT
     try:
         Items.WaitForProps(container.Serial, 1500)
         m = CONTENTS_RE.search(" | ".join(Items.GetPropStringList(container.Serial) or []))
@@ -3475,7 +3489,7 @@ def carry_rank(deeds, stock):
 
 
 def order_deeds(container=None):
-    items = list(getattr(container, "Contains", None) or []) if container is not None else pack_items()
+    items = contents(container) if container is not None else pack_items()
     return [d for d in (read_deed(it) for it in items) if d is not None]
 
 
@@ -3608,7 +3622,11 @@ def can_make(tier, n, stock):
 def fill_first(d):
     """FINISH WHAT'S STARTED (owner, 2026-10-17: "add the fix to focus the previous order if it's already started" -- a
     player found three large orders begun with a couple of nuggets each: by to_go() alone, each new order nearer done
-    took the nuggets from one already begun). An order with nuggets in it first, then the closest to done."""
+    took the nuggets from one already begun). An order with nuggets in it first, then the closest to done.
+    ONE RULE FOR THE NEXT ORDER (owner, 2026-10-17: "That logic should be unified to begin with"): every choice of the
+    order that gets nuggets next asks this -- filling in the field and at Harry, the bank's nuggets taken out for orders
+    (take_for_orders()), the order Harry fills first, and carry_rank()'s order of each size. Which orders are kept or
+    thrown away is another question (prune_deeds(), THE TRASH GOES BY VALUE)."""
     return (d[1] <= 0,) + to_go(d)
 
 
@@ -3843,7 +3861,7 @@ def visit_harry():
         ready = full[:1] or [d for d in deeds if can_make(d[3], d[2] - d[1], stock)]
         if not ready:
             break
-        deed, got, wanted, tier = max(ready, key=lambda d: (d[1] >= d[2], stone_rate(d[3], d[2]), -(d[2] - d[1])))
+        deed, got, wanted, tier = min(ready, key=lambda d: (d[1] < d[2],) + fill_first(d))   # a full one, then the rule
         for _round in range(6):
             if got >= wanted:
                 break
