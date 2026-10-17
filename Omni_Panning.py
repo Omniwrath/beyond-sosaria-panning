@@ -44,6 +44,10 @@
 #     Bag in your pack; or stop asking Harry once 10 are carried.
 #   * Set working chest -- target a chest at home; with a rune named Home, everything panned goes
 #     there instead of the bank. Use the bank -- back to the bank.
+#   * Check for updates when it starts -- off by default. On: at each start it looks for a newer version,
+#     shows what changed, and asks before taking it. An update is taken only when its signature
+#     checks (proof the author made it); your options and data folder are kept, and the old version
+#     is saved in the data folder.
 #   * Rescan -- read your Account Runebook again after you add or move a rune.
 #
 # HOW IT WORKS
@@ -83,6 +87,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
+SCRIPT_VERSION = "1.0.7"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -189,6 +194,8 @@ DEFAULTS = {
     "bank_goods": "1",              # ... the bank's nuggets at its last look, "small:12,large:3" ("1": not looked yet)
     "eth_bank": "",                 # THE ETHEREAL'S BANK, known in advance: "1" unlocked, "0" not, "" never read
     "extra_orders": "store",        # EXTRA ORDERS: "store", "trash" or "stop" -- see EXTRA_ORDER_CHOICES
+    "auto_update": "0",             # THE SIGNED UPDATE: check at start -- off until the player turns it on
+    "skip_update": "",              # ... a version the player chose to skip
 }
 
 
@@ -3953,7 +3960,8 @@ SETUP_GUMP_ID = 0x50414E31     # "PAN1"
 BTN_CLOSE, BTN_START = 1, 2
 CHECKS = (("orders", 103, "Fill Gold Panning Orders at Harry (needs your PO rune)"),
           ("mark_runes", 104, "Mark new runes where gold turns up"),
-          ("avoid_invasions", 106, "Stay out of Town Invasions"))
+          ("avoid_invasions", 106, "Stay out of Town Invasions"),
+          ("auto_update", 107, "Check for updates when it starts (shows what changed, and asks)"))
 GUMP_WAIT_MS = 24 * 60 * 60 * 1000
 
 
@@ -4390,8 +4398,190 @@ def wait_out_invasion():
         pause(10000)
 
 
+# =============================================================================
+# THE SIGNED UPDATE -- with "Check for updates" on, a newer release is shown, asked for, checked and put in place.
+# =============================================================================
+# (owner, 2026-10-17: "If opted in it should start by displaying the change log and requesting permission to update.")
+# At start: the newest release of UPDATE_REPO is read from GitHub. One newer than SCRIPT_VERSION, and not skipped, is
+# shown -- what changed, and Update / Not now / Skip this version. Update downloads the release's script and its
+# signature and takes it only when the signature checks against UPDATE_PUBLIC_KEY (the author signs each release with a
+# key that never leaves the author's machine, so a download that was changed anywhere on the way is refused) and the
+# script compiles. The old file is kept in the data folder as a backup, the new one goes in its place, and the player
+# presses Play again. Options and the data folder are kept. No network, a refused signature or any error: the script
+# runs as it is.
+UPDATE_REPO = "Omniwrath/beyond-sosaria-panning"
+UPDATE_FILE = "Omni_Panning.py"
+UPDATE_TIMEOUT_MS = 10000
+UPDATE_GUMP_ID = 0x50414E33     # "PAN3"
+BTN_UPDATE, BTN_LATER, BTN_SKIP = 21, 22, 23
+UPDATE_WIDTH, UPDATE_NOTES_HEIGHT = 560, 300
+VERSION_RE = re.compile(r'^SCRIPT_VERSION = "([0-9.]+)"', re.M)
+UPDATE_PUBLIC_KEY = (
+    "<RSAKeyValue><Modulus>pNV0Isi3q6bD4XcPuv74fr6NPcoyyFbZU3XErPsuT4RrQ0xKCDZpe6VgruMJCldefm6ZU5ZQDzEsRV"
+    "CRnhQzHFnOWWppNfoN2PWRVJPayKmDqpGSapA4MwjAI5RuPsBzOTT5GfqdEH1vpJNSjqQbYyRbyPDbJCkAxzAC1pmxwiFMRA5QCm"
+    "i3iJPO0boyKepbzCJEYaXXd92CVixwvo+fPmYrMfe2bX2i87w9DBspCi7fevh0ogViniDZ8CZEPZ0aEAB8UsVJlSbRDzThKxJzN0"
+    "J/514mMb0qGi5FWqMZt/ciFInp8A9Xsb7YYPqzy1mau050pzZAdyRHxLf3aIuoD9abbWERZPjlFlo1WOPJnB9q4kRG+HeT0hoBuU"
+    "eGawyQpOO3g1PiFwuqCWXhB9Ci3jbGIR0qLRZViJM1lzacVEaL/N0rsUbdn2n0kPpv67k0Wevfrj5hknKiUucpOLxv33nlW7ATz2"
+    "wEf67cqxCuyTWJVoTF7y2KzUP9yXDykQpZ</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>"
+)
+
+
+def version_tuple(text):
+    return tuple(int(n) for n in re.findall(r"\d+", text or "")[:3])
+
+
+def http_get(url, binary=False):
+    """GET `url`: its bytes (a .NET byte array) with `binary`, else its text. Raises on any failure."""
+    from System.IO import MemoryStream
+    from System.Net import SecurityProtocolType, ServicePointManager, WebRequest
+    from System.Text import Encoding
+    try:
+        ServicePointManager.SecurityProtocol = ServicePointManager.SecurityProtocol | SecurityProtocolType.Tls12
+    except Exception:
+        pass
+    req = WebRequest.Create(url)
+    req.Timeout = UPDATE_TIMEOUT_MS
+    req.UserAgent = "%s/%s" % (SCRIPT_TITLE.replace(" ", "-"), SCRIPT_VERSION)
+    resp = req.GetResponse()
+    try:
+        ms = MemoryStream()
+        resp.GetResponseStream().CopyTo(ms)
+        data = ms.ToArray()
+    finally:
+        resp.Close()
+    return data if binary else Encoding.UTF8.GetString(data)
+
+
+def latest_release():
+    """(version, notes, script url, signature url) of UPDATE_REPO's newest release, or None. Raises on no network."""
+    import json
+    rel = json.loads(http_get("https://api.github.com/repos/%s/releases/latest" % UPDATE_REPO))
+    urls = dict((a.get("name"), a.get("browser_download_url")) for a in rel.get("assets") or [])
+    if UPDATE_FILE not in urls or UPDATE_FILE + ".sig" not in urls:
+        return None                     # a release without a signed script is never offered
+    return ((rel.get("tag_name") or "").lstrip("vV"), rel.get("body") or "", urls[UPDATE_FILE],
+            urls[UPDATE_FILE + ".sig"])
+
+
+def signature_ok(data, sig_text):
+    """True when `sig_text` (base64) is the author's signature of `data`'s exact bytes."""
+    from System import Convert
+    from System.Security.Cryptography import HashAlgorithmName, RSA, RSASignaturePadding
+    try:
+        rsa = RSA.Create()
+        rsa.FromXmlString(UPDATE_PUBLIC_KEY)
+        return bool(rsa.VerifyData(data, Convert.FromBase64String((sig_text or "").strip()), HashAlgorithmName.SHA256,
+                                   RSASignaturePadding.Pkcs1))
+    except Exception:
+        return False
+
+
+def notes_html(body):
+    """A release's notes (GitHub's Markdown) as the gump's HTML: headings bold, bullets, **bold** and *italic*."""
+    out = []
+    for line in (body or "").replace("\r", "").split("\n"):
+        line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").rstrip()
+        indent = len(line) - len(line.lstrip(" "))
+        line = line.strip()
+        if line.startswith("#"):
+            line = "<b>%s</b>" % line.lstrip("#").strip()
+        elif line.startswith(("- ", "* ")):
+            line = "&nbsp;" * (2 + indent) + "&bull; " + line[2:]
+        line = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", line)
+        line = re.sub(r"(?<![*\w])\*(?!\s)(.+?)\*(?![*\w])", r"<i>\1</i>", line)
+        out.append(line)
+    return "<br>".join(out)
+
+
+def update_screen(version, body):
+    """The release's notes and Update / Not now / Skip this version: BTN_UPDATE, BTN_SKIP, or BTN_LATER."""
+    title = "%s %s is available -- you have %s" % (SCRIPT_TITLE, version, SCRIPT_VERSION)
+    width = max(UPDATE_WIDTH, EDGE_PX + 20 + text_px(title))
+    height = 60 + UPDATE_NOTES_HEIGHT + 70
+    gd = new_screen(width, height, title)
+    Gumps.AddHtml(gd, 20, 45, width - 40, UPDATE_NOTES_HEIGHT, notes_html(body) or "No notes came with it.", True,
+                  True)
+    button_row(gd, 20, height - 40, [
+        (BTN_UPDATE, "Update", "Download it, check its signature, and put it in place of this one."),
+        (BTN_LATER, "Not now", "Ask again at the next start."),
+        (BTN_SKIP, "Skip this version", "Do not ask about %s again." % version)])
+    Gumps.SendGump(UPDATE_GUMP_ID, Player.Serial, 150, 150, gd.gumpDefinition, gd.gumpStrings)
+    if not Gumps.WaitForGump(UPDATE_GUMP_ID, GUMP_WAIT_MS):
+        return BTN_LATER
+    resp = Gumps.GetGumpData(UPDATE_GUMP_ID)
+    return resp.buttonid if resp is not None and resp.buttonid in (BTN_UPDATE, BTN_SKIP) else BTN_LATER
+
+
+def apply_update(version, data):
+    """`data` -- signed and checked -- in place of this file, the old one kept in the data folder. True once written."""
+    from System.IO import File
+    from System.Text import Encoding
+    text = Encoding.UTF8.GetString(data).lstrip(u"\ufeff")
+    m = VERSION_RE.search(text)
+    if m is None or m.group(1) != version:
+        log("The update says it is %s, not %s -- not taken." % (m.group(1) if m else "no version", version), HUE_BAD)
+        return False
+    try:
+        compile(text, UPDATE_FILE, "exec")
+    except SyntaxError as err:
+        log("The update does not compile (%s) -- not taken." % err, HUE_BAD)
+        return False
+    here = os.path.abspath(__file__)
+    if not ensure_data_dir():
+        log("No data folder for the backup -- the update was not taken.", HUE_BAD)
+        return False
+    backup = data_path("%s.%s.bak" % (os.path.basename(here), SCRIPT_VERSION))
+    File.Copy(here, backup, True)
+    File.WriteAllBytes(here, data)
+    log("Updated to %s -- press Play to run it. The old version is kept as %s." % (version, backup), HUE_GOOD)
+    return True
+
+
+def check_for_update():
+    """THE SIGNED UPDATE, at start: True when this file was replaced and the run should end."""
+    if not opt("auto_update"):
+        return False
+    log("Checking for updates...")
+    try:
+        found = latest_release()
+    except Exception as err:
+        log("Could not check for updates (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
+        return False
+    if found is None or version_tuple(found[0]) <= version_tuple(SCRIPT_VERSION):
+        log("Up to date (%s)." % SCRIPT_VERSION)
+        return False
+    version, body, script_url, sig_url = found
+    if SETTINGS.get("skip_update") == version:
+        log("%s %s is out -- skipped at your choice." % (SCRIPT_TITLE, version))
+        return False
+    pick = update_screen(version, body)
+    if pick == BTN_SKIP:
+        SETTINGS["skip_update"] = version
+        save_settings()
+        log("%s will not be offered again." % version)
+        return False
+    if pick != BTN_UPDATE:
+        return False
+    try:
+        data = http_get(script_url, binary=True)
+        sig = http_get(sig_url)
+    except Exception as err:
+        log("The update could not be downloaded (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
+        return False
+    if not signature_ok(data, sig):
+        log("The update's signature does not check -- it was NOT taken. Running %s." % SCRIPT_VERSION, HUE_BAD)
+        return False
+    try:
+        return apply_update(version, data)
+    except Exception as err:
+        log("The update could not be written (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
+        return False
+
+
 def run():
     load_settings()
+    if check_for_update():              # THE SIGNED UPDATE
+        return
     learn_load()                        # THE PAN LEARNS ITS WATER
     bow_start()                         # THE BOW IS THE PROOF
     prune_logs()
