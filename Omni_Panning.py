@@ -44,10 +44,12 @@
 #     Bag in your pack; or stop asking Harry once 10 are carried.
 #   * Set working chest -- target a chest at home; with a rune named Home, everything panned goes
 #     there instead of the bank. Use the bank -- back to the bank.
-#   * Check for updates when it starts -- off by default. On: at each start it looks for a newer version,
-#     shows what changed, and asks before taking it. An update is taken only when its signature
-#     checks (proof the author made it); your options and data folder are kept, and the old version
-#     is saved in the data folder.
+#   * Check for updates -- off by default. On: at start and every few hours it looks for a newer
+#     version and shows what changed in a window of its own, panning on meanwhile; Update puts it in
+#     place at the next stop between runes. An update is taken only when its signature checks (proof
+#     the author made it); your options and data folder are kept, and the old version is saved in the
+#     data folder. With RazorEnhanced's Auto Script Reload ticked (Scripting tab) the new version
+#     starts by itself; without it the script stops and says to press Refresh, then Play.
 #   * Rescan -- read your Account Runebook again after you add or move a rune.
 #
 # HOW IT WORKS
@@ -87,7 +89,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.0.7"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.0.8"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -1103,10 +1105,19 @@ def tinker_press(button):
     Misc.Pause(50)
 
 
+# ONE FAILED PAN IS NOT THE END (2026-10-17: a player's run stopped at 13:09 on "The tinker's kit made no Gold Pan" with the
+# same kit that made pans at 12:08, 12:13 and 14:19). A pan that does not come is tried again, PAN_TRIES in all, PAN_WAIT_S
+# each; only then is it a failure, said with what the shard answered.
+PAN_TRIES = 3
+PAN_WAIT_S = 5
+PAN_SAID = [[]]                # the shard's lines from the last failed try
+
+
 def make_pan():
     """One Gold Pan from the tinker's kit (and a new kit first when the last is nearly worn out)."""
     if not tinker_kits() or ingots_on_hand() < PAN_INGOTS:
         return False
+    stamp = newest_journal_timestamp()
     before = pans_in_pack()
     Items.UseItem(tinker_kits()[0])
     if wait_for_gump_present(TINKER_GUMP, 10000) is None:
@@ -1118,19 +1129,38 @@ def make_pan():
     tinker_press(TINKER_PAN_MAKE)
     Gumps.SendAction(TINKER_GUMP, 0)
     KEY_IRON[0] = None                  # the key may have paid for it: read again when next asked
-    for _ in range(20):
+    until = time.time() + PAN_WAIT_S
+    while time.time() < until:
         if pans_in_pack() > before:
             return True
         Misc.Pause(150)
+    PAN_SAID[0] = [x for x in journal_texts_after(stamp) if x][-2:]
     return False
+
+
+def no_pan_reason():
+    """EACH REASON BY NAME: why no Gold Pan could be had, in one plain cause."""
+    if not tinker_kits():
+        return "no tinker's kit is carried, and no tinker sold one"
+    if ingots_on_hand() < PAN_INGOTS:
+        return "only %d iron ingot(s) are carried (a pan takes %d), and no tinker sold more" % (ingots_on_hand(),
+                                                                                              PAN_INGOTS)
+    return "the tinker's kit made none in %d tries%s" % (PAN_TRIES, " -- the shard said: " + " / ".join(PAN_SAID[0])
+                                                         if PAN_SAID[0] else "")
 
 
 def keep_pans():
     """PANS_KEPT pans in the pack, made from what we carry. True when at least one is carried."""
     made = 0
     while pans_in_pack() < PANS_KEPT and made < PANS_KEPT and ingots_on_hand() >= PAN_INGOTS and tinker_kits():
-        if not make_pan():
-            log("The tinker's kit made no Gold Pan (Tinkering too low?).", HUE_BAD)
+        ok, tries = make_pan(), 1
+        while not ok and tries < PAN_TRIES and tinker_kits() and ingots_on_hand() >= PAN_INGOTS:
+            Misc.Pause(1000)            # ONE FAILED PAN IS NOT THE END
+            ok, tries = make_pan(), tries + 1
+        if not ok:
+            log("The tinker's kit made no Gold Pan in %d tries%s." % (
+                tries, " -- the shard said: " + " / ".join(PAN_SAID[0]) if PAN_SAID[0] else " (Tinkering too low?)"),
+                HUE_BAD)
             break
         made += 1
     if made:
@@ -1406,6 +1436,24 @@ def card_words(gid):
 def invasion_named(town):
     INVADED[town.lower()] = time.time()
     log("A Town Invasion holds %s -- keeping out of it." % town, HUE_BAD)
+    save_invaded()
+
+
+# THE CARD IS READ AT ONCE (2026-10-17 16:59:57: Skara Brae's invasion card showed for 9 seconds, then the same window
+# turned into the Taming Tournament's; the panner was travelling, read no card, never learned the town, and kept out of
+# all eight invasion towns -- 59 of 75 runes -- for the guard's full 10 minutes). The cards are read every CARD_READ_S
+# from every wait (options_check(), walk_to()), not only between steps.
+CARD_READ_S = 1.0
+CARD_READ_AT = [0.0]
+
+
+def cards_tick():
+    if time.time() - CARD_READ_AT[0] >= CARD_READ_S:
+        CARD_READ_AT[0] = time.time()
+        try:
+            read_cards()
+        except Exception:
+            pass
 
 
 def read_cards():
@@ -2002,6 +2050,7 @@ def walk_to(x, y, z, stop=None):
     deadline = time.time() + 5 + cheb(x, y, last[0], last[1]) * 0.6
     while time.time() < deadline:
         Misc.Pause(250)
+        cards_tick()                    # THE CARD IS READ AT ONCE
         if stop is not None and stop():
             return False
         pos = here()
@@ -2114,11 +2163,12 @@ def shore_walk_out(visit):
                 stands.append((max(abs(dx), abs(dy)), x, y))
         stands.sort()
         moved = False
-        skipped = 0
+        skipped = {}                    # EACH REASON BY NAME
         failed = 0
         for _d, x, y in stands:
-            if risky_spot(x, y, m) or others_near(m, x, y) or line_near_danger(m, cx, cy, x, y):
-                skipped += 1
+            why = set_aside_reason(m, cx, cy, x, y)
+            if why:
+                skipped[why] = skipped.get(why, 0) + 1
                 continue
             z = standable(x, y, m)
             if z is None:
@@ -2142,8 +2192,8 @@ def shore_walk_out(visit):
         if not moved and failed >= SHORE_WALK_FAILS:
             return ended("%d walks farther out from here got nowhere" % failed)
         if not moved:
-            return ended("no shore farther out to walk to (%d set aside by danger, an invasion or another panner)" %
-                         skipped if skipped else "no shore farther out to walk to")
+            return ended("no shore farther out to walk to (%d set aside -- %s)" % (
+                sum(skipped.values()), set_aside_words(skipped)) if skipped else "no shore farther out to walk to")
         if walk_on(visit, PAN_WALK_RADIUS) or water_near(here()[0], here()[1], m, None, visit.tried):
             x, y, _z = here()
             log("Fresh water %d tiles out from %s, at %d,%d." % (cheb(x, y, ox, oy), base_name(visit.rune["name"]),
@@ -2719,9 +2769,12 @@ def loot_in_pack():
 # the pack crept to its fill line and the panner went to the bank after every sift for hours). A stack still in the
 # pack after its move was refused; a refused unload at the bank stops the run with what was refused (BANK_FULL), never
 # a loop to the banker.
+# THE PLAYER'S OWN LOAD (2026-10-17, owner: "If the player is doing something dumb, we should tell them"): a pack still
+# over its fill line after an unload that refused nothing holds the player's own things, not ours -- the same loop to
+# the banker after every sift. The run stops, saying what the pack weighs and holds.
 MOVE_SETTLE_MS = 500           # a refused item takes a moment to come back
 REFUSED = [[]]                 # the names of what the last move_all() could not move
-BANK_FULL = [None]             # set: the run stops, saying this
+STOP_RUN = [None]              # set: the run stops, saying this -- a full bank, or THE PLAYER'S OWN LOAD
 
 
 def still_in_pack(it):
@@ -2752,9 +2805,9 @@ def bank_refused(what):
     if not REFUSED[0]:
         return False
     names = sorted(set(REFUSED[0]))
-    BANK_FULL[0] = ("Your bank would not take %d stack(s) of %s (%s) -- it is full. Make room in your bank, then press "
+    STOP_RUN[0] = ("Your bank would not take %d stack(s) of %s (%s) -- it is full. Make room in your bank, then press "
                     "Play." % (len(REFUSED[0]), what, ", ".join(names[:6]) + (" and more" if len(names) > 6 else "")))
-    log(BANK_FULL[0], HUE_BAD)
+    log(STOP_RUN[0], HUE_BAD)
     return True
 
 
@@ -2987,7 +3040,54 @@ def turnin_panner():
         if not row[5]:
             row[5] = my_id()
             write_rows(CHESTS_FILE, rows)
+    if turnin_taken_over(row[5]):       # A GONE PANNER LETS GO
+        return my_id()
     return row[5]
+
+
+# A GONE PANNER LETS GO (2026-10-17; owner: "similar to changing control over who handles orders, we should also handover
+# those spots if they aren't being used"). A panner moved to a working chest whose turn-in panner had left panning 39
+# hours before -- it would have put its orders in the chest for a panner that never came -- and found Britain 2-5,
+# Nujel'm 2-4 and Cove 2 still marked by the two panners that left. A panner with no work on the shared lists
+# (Working.txt, Areas.txt) in PANNER_GONE_S is gone: its turn-ins pass to the panner sharing the chest (said once), and
+# its marked runes are free (others_near()). Back at work, its runes are its own again.
+PANNER_GONE_S = 2 * 3600
+TURNIN_TAKEN_SAID = [False]
+
+
+def panner_gone(who):
+    """A GONE PANNER LETS GO: True when `who` has not worked or sifted in PANNER_GONE_S."""
+    if not who or who == my_id():
+        return False
+    seen = panner_last_seen(who)
+    return not seen or time.time() - seen >= PANNER_GONE_S
+
+
+def panner_last_seen(who):
+    """When the panner `who` last worked or sifted, from the shared lists -- 0 when never."""
+    last = 0.0
+    for name, col in ((WORKING_FILE, 4), (AREAS_FILE, 4)):
+        for r in read_rows(name):
+            try:
+                if r[0] == who:
+                    last = max(last, float(r[col]))
+            except (ValueError, IndexError):
+                continue
+    return last
+
+
+def turnin_taken_over(named):
+    """A GONE PANNER LETS GO: `named` (the chest's turn-in panner) is gone -- this panner takes the turn-ins. True when it
+    did."""
+    if not panner_gone(named):
+        return False
+    seen = panner_last_seen(named)
+    set_turnin_panner(my_id())
+    if not TURNIN_TAKEN_SAID[0]:
+        TURNIN_TAKEN_SAID[0] = True
+        log("The turn-in panner for your working chest (%s) has not panned %s -- this panner takes over the turn-ins "
+            "at Harry." % (named, "in %.0f hours" % ((time.time() - seen) / 3600.0) if seen else "at all"))
+    return True
 
 
 def handles_turnins():
@@ -3036,29 +3136,61 @@ def register_spots():
 
 def others_near(m, x, y):
     """Another panner's marked rune, the rune it is working now, or a spot it sifted in the last AREA_HOLD_S (NOT THE
-    SAME AREAS), within PANNER_RESERVE_TILES of (x, y)."""
+    SAME AREAS), within PANNER_RESERVE_TILES of (x, y): "marked", "working", "panned", or None."""
+    claim = other_claim(m, x, y)
+    return claim[0] if claim else None
+
+
+def other_claim(m, x, y):
+    """others_near()'s answer with whose it is: (kind, panner, what -- a rune's name or "x,y"), or None."""
     now = time.time()
     for r in read_rows(SPOTS_FILE):
         try:
-            if r[0] != my_id() and int(r[1]) == m and cheb(int(r[2]), int(r[3]), x, y) < PANNER_RESERVE_TILES:
-                return "marked"
+            if (r[0] != my_id() and int(r[1]) == m and cheb(int(r[2]), int(r[3]), x, y) < PANNER_RESERVE_TILES
+                    and not panner_gone(r[0])):  # A GONE PANNER LETS GO
+                return "marked", r[0], (r[4] if len(r) > 4 else "%s,%s" % (r[2], r[3]))
         except (ValueError, IndexError):
             continue
     for r in read_rows(WORKING_FILE):
         try:
             if (r[0] != my_id() and now - float(r[4]) < WORKING_FRESH_S and int(r[1]) == m
                     and cheb(int(r[2]), int(r[3]), x, y) < PANNER_RESERVE_TILES):
-                return "working"
+                return "working", r[0], "%s,%s" % (r[2], r[3])
         except (ValueError, IndexError):
             continue
     for r in read_rows(AREAS_FILE):     # NOT THE SAME AREAS
         try:
             if (r[0] != my_id() and now - float(r[4]) < AREA_HOLD_S and int(r[1]) == m
                     and cheb(int(r[2]), int(r[3]), x, y) < PANNER_RESERVE_TILES):
-                return "panned"
+                return "panned", r[0], "%s,%s" % (r[2], r[3])
         except (ValueError, IndexError):
             continue
     return None
+
+
+# EACH REASON BY NAME (owner, 2026-10-17: "an error message shouldn't have the word 'or' in it. identify the exact
+# problem." -- of "368 set aside by danger, an invasion or another panner", when every one was a rune of a panner that had
+# left). The walk out names why it set each spot aside, counted, with whose rune or which town.
+def set_aside_reason(m, cx, cy, x, y):
+    """Why the walk out passes (x, y) by, in words that name it -- or None when it does not."""
+    if risky_spot(x, y, m):
+        town = town_at(x, y, m)
+        return ("%s is invaded" % town.title()) if town in INVADED else (
+            "%s, held for the invasion hour (no town named yet)" % (town or "a town").title())
+    claim = other_claim(m, x, y)
+    if claim:
+        kind, who, what = claim
+        return {"marked": "%s's rune %s", "working": "%s working at %s", "panned": "%s panned at %s"}[kind] % (who, what)
+    if line_near_danger(m, cx, cy, x, y):
+        return "the way there passes a danger spot"
+    return None
+
+
+def set_aside_words(reasons):
+    """{reason: count} as one line, the most first: "360: 0x1234's rune Britain 2; 8: the way there passes a danger spot"."""
+    parts = sorted(reasons.items(), key=lambda kv: -kv[1])
+    return "; ".join("%d: %s" % (n, why) for why, n in parts[:4]) + (
+        "; %d more reasons" % (len(parts) - 4) if len(parts) > 4 else "")
 
 
 def note_area(m, x, y):
@@ -3961,7 +4093,7 @@ BTN_CLOSE, BTN_START = 1, 2
 CHECKS = (("orders", 103, "Fill Gold Panning Orders at Harry (needs your PO rune)"),
           ("mark_runes", 104, "Mark new runes where gold turns up"),
           ("avoid_invasions", 106, "Stay out of Town Invasions"),
-          ("auto_update", 107, "Check for updates when it starts (shows what changed, and asks)"))
+          ("auto_update", 107, "Check for updates (shows what changed, and asks)"))
 GUMP_WAIT_MS = 24 * 60 * 60 * 1000
 
 
@@ -4237,7 +4369,7 @@ def tracker_rows():
     try:
         usable, total, dead, risky, taken, banned = runes_status()
         rows.append(("Runes: %d of %d usable" % (usable, total), HUE_GOOD if usable >= STIFLED_RUNES else HUE_BAD))
-        why = [w for w in ("%d no finds" % dead if dead else "", "%d invaded" % risky if risky else "",
+        why = [w for w in ("%d no finds" % dead if dead else "", ("%d held for the invasion hour" if invasion_window() else "%d invaded") % risky if risky else "",
                            "%d another panner's" % taken if taken else "", "%d unsafe" % banned if banned else "")
                if w]
         if why:
@@ -4321,6 +4453,8 @@ def options_check():
     the next press differs again. OPTIONS AT ONCE (owner, 2026-10-16 00:2x: "it takes well over 5 seconds, but i'd
     expect to be instant"): asked from every wait -- a sift's, the wait for the next, the long ones -- not only between
     sifts (8 s apart)."""
+    cards_tick()                        # THE CARD IS READ AT ONCE
+    update_poll()                       # THE UPDATE ARRIVES MID-RUN
     pressed = None
     try:
         if Gumps.WaitForGump(TRACKER_GUMP_ID, 1):
@@ -4380,6 +4514,12 @@ def trip():
         fill_at_harry()
     if pack_full() and not unload():
         return False
+    if pack_full() and not STOP_RUN[0]:   # THE PLAYER'S OWN LOAD
+        STOP_RUN[0] = ("Your pack is still over its %d%% fill line after unloading (%d of %d stones, %d items) -- what "
+                       "is left is yours, not what was panned. Move some of it out, then press Play." % (
+                           PACK_PCT, Player.Weight, Player.MaxWeight, len(pack_items())))
+        log(STOP_RUN[0], HUE_BAD)
+        return False
     keep_pans()
     if supplies_low():
         supply_run()
@@ -4402,18 +4542,26 @@ def wait_out_invasion():
 # THE SIGNED UPDATE -- with "Check for updates" on, a newer release is shown, asked for, checked and put in place.
 # =============================================================================
 # (owner, 2026-10-17: "If opted in it should start by displaying the change log and requesting permission to update.")
-# At start: the newest release of UPDATE_REPO is read from GitHub. One newer than SCRIPT_VERSION, and not skipped, is
-# shown -- what changed, and Update / Not now / Skip this version. Update downloads the release's script and its
-# signature and takes it only when the signature checks against UPDATE_PUBLIC_KEY (the author signs each release with a
-# key that never leaves the author's machine, so a download that was changed anywhere on the way is refused) and the
-# script compiles. The old file is kept in the data folder as a backup, the new one goes in its place, and the player
-# presses Play again. Options and the data folder are kept. No network, a refused signature or any error: the script
-# runs as it is.
+# THE UPDATE ARRIVES MID-RUN (owner, 2026-10-17: "why not offer it mid run?"): at start and every UPDATE_EVERY_S, the
+# newest release of UPDATE_REPO is read from GitHub. One newer than SCRIPT_VERSION, and not skipped, is shown in a window
+# of its own -- what changed, and Update / Not now / Skip this version -- and panning goes on; the press is read from
+# every wait (options_check()). Update is done at the next stop between runes, never mid-visit: the release's script and
+# its signature are downloaded, and taken only when the signature checks against UPDATE_PUBLIC_KEY (the author signs
+# each release with a key that never leaves the author's machine, so a download changed anywhere on the way is refused)
+# and the script compiles. The old file is kept in the data folder, the new one goes in its place. RazorEnhanced's Auto
+# Script Reload restarts the script on it; without it the run stops after UPDATE_RELOAD_WAIT_S and says what to press --
+# NEVER A SCRIPT THAT STARTS ITSELF (owner: "having a script start itself is a recipe for disaster"). Options and the data
+# folder are kept. No network, a refused signature or any error: the script runs as it is.
 UPDATE_REPO = "Omniwrath/beyond-sosaria-panning"
 UPDATE_FILE = "Omni_Panning.py"
 UPDATE_TIMEOUT_MS = 10000
 UPDATE_GUMP_ID = 0x50414E33     # "PAN3"
 BTN_UPDATE, BTN_LATER, BTN_SKIP = 21, 22, 23
+UPDATE_BUTTON_SETS = ((21, 22, 23), (31, 32, 33))   # (update, later, skip) -- taken in turn by each offer: the window's
+                                                     # answer latches, so only a CHANGE is a press (the tracker's way)
+UPDATE_EVERY_S = 6 * 3600
+UPDATE_RELOAD_WAIT_S = 10
+UPD = {"next": 0.0, "offer": None, "ids": UPDATE_BUTTON_SETS[0], "last": None, "apply": False, "turn": 0}
 UPDATE_WIDTH, UPDATE_NOTES_HEIGHT = 560, 300
 VERSION_RE = re.compile(r'^SCRIPT_VERSION = "([0-9.]+)"', re.M)
 UPDATE_PUBLIC_KEY = (
@@ -4493,8 +4641,16 @@ def notes_html(body):
     return "<br>".join(out)
 
 
-def update_screen(version, body):
-    """The release's notes and Update / Not now / Skip this version: BTN_UPDATE, BTN_SKIP, or BTN_LATER."""
+def update_window(version, body):
+    """The release's notes and Update / Not now / Skip this version, in a window of its own -- nothing waits on it."""
+    UPD["turn"] += 1
+    UPD["ids"] = UPDATE_BUTTON_SETS[UPD["turn"] % 2]
+    try:
+        r = Gumps.GetGumpData(UPDATE_GUMP_ID)
+        UPD["last"] = getattr(r, "buttonid", None) if r is not None else None
+    except Exception:
+        UPD["last"] = None
+    upd, later, skip = UPD["ids"]
     title = "%s %s is available -- you have %s" % (SCRIPT_TITLE, version, SCRIPT_VERSION)
     width = max(UPDATE_WIDTH, EDGE_PX + 20 + text_px(title))
     height = 60 + UPDATE_NOTES_HEIGHT + 70
@@ -4502,14 +4658,90 @@ def update_screen(version, body):
     Gumps.AddHtml(gd, 20, 45, width - 40, UPDATE_NOTES_HEIGHT, notes_html(body) or "No notes came with it.", True,
                   True)
     button_row(gd, 20, height - 40, [
-        (BTN_UPDATE, "Update", "Download it, check its signature, and put it in place of this one."),
-        (BTN_LATER, "Not now", "Ask again at the next start."),
-        (BTN_SKIP, "Skip this version", "Do not ask about %s again." % version)])
-    Gumps.SendGump(UPDATE_GUMP_ID, Player.Serial, 150, 150, gd.gumpDefinition, gd.gumpStrings)
-    if not Gumps.WaitForGump(UPDATE_GUMP_ID, GUMP_WAIT_MS):
-        return BTN_LATER
-    resp = Gumps.GetGumpData(UPDATE_GUMP_ID)
-    return resp.buttonid if resp is not None and resp.buttonid in (BTN_UPDATE, BTN_SKIP) else BTN_LATER
+        (upd, "Update", "Download it, check its signature, and put it in place of this one at the next stop."),
+        (later, "Not now", "Ask again later."),
+        (skip, "Skip this version", "Do not ask about %s again." % version)])
+    Gumps.SendGump(UPDATE_GUMP_ID, Player.Serial, 200, 120, gd.gumpDefinition, gd.gumpStrings)
+
+
+def update_check():
+    """THE UPDATE ARRIVES MID-RUN: at start and every UPDATE_EVERY_S, a newer release, not skipped, is offered."""
+    if not opt("auto_update") or UPD["offer"] or UPD["apply"] or time.time() < UPD["next"]:
+        return
+    UPD["next"] = time.time() + UPDATE_EVERY_S
+    try:
+        found = latest_release()
+    except Exception as err:
+        log("Could not check for updates (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
+        return
+    if found is None or version_tuple(found[0]) <= version_tuple(SCRIPT_VERSION):
+        log("Up to date (%s)." % SCRIPT_VERSION)
+        return
+    if SETTINGS.get("skip_update") == found[0]:
+        log("%s %s is out -- skipped at your choice." % (SCRIPT_TITLE, found[0]))
+        return
+    UPD["offer"] = found
+    update_window(found[0], found[1])
+    log("%s %s is out -- its window says what changed. Panning goes on meanwhile." % (SCRIPT_TITLE, found[0]))
+
+
+def update_poll():
+    """The update window's press, read from every wait: Update is done at the next stop between runes."""
+    if not UPD["offer"]:
+        return
+    try:
+        if not Gumps.WaitForGump(UPDATE_GUMP_ID, 1):
+            return
+        r = Gumps.GetGumpData(UPDATE_GUMP_ID)
+        pressed = getattr(r, "buttonid", None) if r is not None else None
+    except Exception:
+        return
+    if pressed == UPD["last"]:
+        return
+    UPD["last"] = pressed
+    upd, later, skip = UPD["ids"]
+    version = UPD["offer"][0]
+    if pressed == upd:
+        UPD["apply"] = True
+        log("Updating to %s at the next stop between runes." % version)
+    elif pressed == skip:
+        UPD["offer"] = None
+        SETTINGS["skip_update"] = version
+        save_settings()
+        log("%s will not be offered again." % version)
+    else:                               # Not now, or the window closed
+        UPD["offer"] = None
+        log("Not now -- %s is offered again at the next check, in %d hours." % (version, UPDATE_EVERY_S // 3600))
+
+
+def update_safe_point():
+    """Between runes: the update check, and an Update pressed done here. A run left on the old version after the write
+    (no Auto Script Reload) stops, saying what to press."""
+    update_check()
+    if not UPD["apply"]:
+        return
+    UPD["apply"] = False
+    version, _body, script_url, sig_url = UPD["offer"]
+    UPD["offer"] = None
+    try:
+        data = http_get(script_url, binary=True)
+        sig = http_get(sig_url)
+    except Exception as err:
+        log("The update could not be downloaded (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
+        return
+    if not signature_ok(data, sig):
+        log("The update's signature does not check -- it was NOT taken. Running %s." % SCRIPT_VERSION, HUE_BAD)
+        return
+    try:
+        written = apply_update(version, data)
+    except Exception as err:
+        log("The update could not be written (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
+        return
+    if not written:
+        return
+    pause(UPDATE_RELOAD_WAIT_S * 1000)  # Auto Script Reload ends this run here and starts the new one
+    STOP_RUN[0] = ("Updated to %s. Press Refresh (the middle round button on RazorEnhanced's Scripting tab), then Play. "
+                   "To have updates restart by themselves, tick Auto Script Reload there." % version)
 
 
 def apply_update(version, data):
@@ -4533,55 +4765,13 @@ def apply_update(version, data):
     backup = data_path("%s.%s.bak" % (os.path.basename(here), SCRIPT_VERSION))
     File.Copy(here, backup, True)
     File.WriteAllBytes(here, data)
-    log("Updated to %s -- press Play to run it. The old version is kept as %s." % (version, backup), HUE_GOOD)
+    log("Updated to %s. The old version is kept as %s." % (version, backup), HUE_GOOD)
     return True
-
-
-def check_for_update():
-    """THE SIGNED UPDATE, at start: True when this file was replaced and the run should end."""
-    if not opt("auto_update"):
-        return False
-    log("Checking for updates...")
-    try:
-        found = latest_release()
-    except Exception as err:
-        log("Could not check for updates (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
-        return False
-    if found is None or version_tuple(found[0]) <= version_tuple(SCRIPT_VERSION):
-        log("Up to date (%s)." % SCRIPT_VERSION)
-        return False
-    version, body, script_url, sig_url = found
-    if SETTINGS.get("skip_update") == version:
-        log("%s %s is out -- skipped at your choice." % (SCRIPT_TITLE, version))
-        return False
-    pick = update_screen(version, body)
-    if pick == BTN_SKIP:
-        SETTINGS["skip_update"] = version
-        save_settings()
-        log("%s will not be offered again." % version)
-        return False
-    if pick != BTN_UPDATE:
-        return False
-    try:
-        data = http_get(script_url, binary=True)
-        sig = http_get(sig_url)
-    except Exception as err:
-        log("The update could not be downloaded (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
-        return False
-    if not signature_ok(data, sig):
-        log("The update's signature does not check -- it was NOT taken. Running %s." % SCRIPT_VERSION, HUE_BAD)
-        return False
-    try:
-        return apply_update(version, data)
-    except Exception as err:
-        log("The update could not be written (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
-        return False
 
 
 def run():
     load_settings()
-    if check_for_update():              # THE SIGNED UPDATE
-        return
+    update_check()                      # THE UPDATE ARRIVES MID-RUN: offered now, panning goes on
     learn_load()                        # THE PAN LEARNS ITS WATER
     bow_start()                         # THE BOW IS THE PROOF
     prune_logs()
@@ -4617,7 +4807,7 @@ def run():
     brought_goods_said()                # WHAT THE PLAYER BROUGHT
     log("Panning %d town(s)%s." % (len(route()), "; Gold Panning Orders at Harry" if orders_on() else ""))
     if not keep_pans() and not (supplies_low() and supply_run()):
-        log("No Gold Pan, and none could be made or bought -- stopping.", HUE_BAD)
+        log("No Gold Pan: %s -- stopping." % no_pan_reason(), HUE_BAD)
         return
     if orders_on() and not order_deeds():
         log("No Gold Panning Order carried -- to Harry for one first.")
@@ -4626,8 +4816,9 @@ def run():
     fails = 0
     while True:
         tracker_tick()
-        if BANK_FULL[0]:                # EVERY MOVE IS CHECKED
-            log("Stopping: %s" % BANK_FULL[0], HUE_BAD)
+        update_safe_point()             # THE UPDATE ARRIVES MID-RUN: between runes only
+        if STOP_RUN[0]:                # EVERY MOVE IS CHECKED
+            log("Stopping: %s" % STOP_RUN[0], HUE_BAD)
             return
         read_broadcasts()
         if ROUTE_STALE[0]:
@@ -4687,7 +4878,7 @@ def run():
             index -= 1                   # back to the same town
         elif reason == "nopan":
             if not (supplies_low() and supply_run()):
-                log("No Gold Pan left, and none could be made or bought -- stopping.", HUE_BAD)
+                log("No Gold Pan left: %s -- stopping." % no_pan_reason(), HUE_BAD)
                 return
 
 
