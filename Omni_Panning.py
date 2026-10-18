@@ -23,6 +23,9 @@
 #   * Optional: a rune named Home beside a chest of yours, to unload there instead of the bank.
 #   * Optional: a Sosarian Ethereal in your backpack with its bank unlocked -- the bank opens where
 #     you stand, no trip to a banker.
+#   * Optional: Resource and Taming Order pickups -- a rune named RO beside the Resource Gatherer,
+#     a rune named TO beside the Taming Order vendor (at the top of your book or one folder down),
+#     a rune named Home, and your Resource Order Book and Taming Order Book by that Home rune.
 #
 # USING IT
 #   Press Play. A short screen shows what it found; press Start. Later runs skip that screen.
@@ -70,6 +73,12 @@
 #     of their size where it stands; a pack still full goes to Harry, who trades nuggets up, takes
 #     every order it can FINISH (never a partial) and gives the next. The orders paying the most
 #     rough stone a nugget go first. Harry hands out a new order every 30 minutes.
+#   * Order pickups: with an RO or TO rune, a Home rune and that kind's book by the Home rune, it
+#     checks at start that it can reach each book, then asks the vendor for an order every 30
+#     minutes (sooner or later when he says when he will have one). The orders ride in the pack and
+#     go into their book whenever an unload brings it home -- or, with no working chest, on a stop
+#     at home the unload makes for them. A kind whose book is missing, out of reach or refusing is
+#     not picked up, and the log says which and why.
 #   * Long walks: with an ethereal mount statue in the pack it rides any walk over 40 tiles.
 #   * Safety: lost hits, poison, a red or orange mobile near, a red anywhere in view, or anything in
 #     view with its war mode on (it has picked a fight), and it leaves for the next rune;
@@ -89,7 +98,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.0.11"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.0.12"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -198,6 +207,8 @@ DEFAULTS = {
     "extra_orders": "store",        # EXTRA ORDERS: "store", "trash" or "stop" -- see EXTRA_ORDER_CHOICES
     "auto_update": "0",             # THE SIGNED UPDATE: check at start -- off until the player turns it on
     "skip_update": "",              # ... a version the player chose to skip
+    "ro_path": "", "to_path": "",   # THE ORDER PICKUPS: where the RO and TO runes were found
+    "ro_next": "0", "to_next": "0", # ... and when each vendor is asked next
 }
 
 
@@ -1317,10 +1328,17 @@ def close_new_windows(before):
 
 
 def vendor_buy(vendor, item_id, name, amount, max_price):
+    """One purchase through RazorEnhanced's Vendor.Buy -- by the item's graphic, or by its name when `item_id` is None --
+    and the shop window it made the client open closed at once (THE SHOP CLOSES BEHIND US)."""
     try:
-        return Vendor.Buy(vendor.Serial, item_id, amount, max_price)
-    except Exception:
-        return Vendor.Buy(vendor.Serial, name, amount, max_price)
+        if item_id is None:
+            return Vendor.Buy(vendor.Serial, name, amount, max_price)
+        try:
+            return Vendor.Buy(vendor.Serial, item_id, amount, max_price)
+        except Exception:
+            return Vendor.Buy(vendor.Serial, name, amount, max_price)
+    finally:
+        close_shop_window(vendor)
 
 
 def supply_run():
@@ -1335,10 +1353,7 @@ def supply_run():
     windows_before = open_window_ids()
     if not tinker_kits():
         for kit_id in TINKER_KIT_IDS + (None,):      # each id the shop may list it under, then its name
-            if kit_id is None:
-                Vendor.Buy(vendor.Serial, "tinker's tools", 1, 50)
-            else:
-                vendor_buy(vendor, kit_id, "tinker's tools", 1, 50)
+            vendor_buy(vendor, kit_id, "tinker's tools", 1, 50)
             Misc.Pause(1200)
             if tinker_kits():
                 break
@@ -1352,6 +1367,20 @@ def supply_run():
     log("At the tinker: %d iron ingot(s), %d kit(s) carried%s." % (
         ingots_on_hand(), len(tinker_kits()), "; the shop window closed" if closed else ""))
     return keep_pans()
+
+
+def close_shop_window(vendor):
+    """THE SHOP CLOSES BEHIND US (owner, 2026-10-17: "we need to close this screen when we're done with it"): the Shop
+    Inventory window a purchase opens is the client's own, not a server window, so close_new_windows() never saw it and
+    it stayed on the player's screen. It cannot be kept from opening: Vendor.Buy asks the vendor for his price list through
+    his Buy menu entry, and that answer is what the client draws (read in RazorEnhanced.exe, 2026-10-17). The client keys
+    the window by the vendor's serial; RazorEnhanced's CUO.CloseGump() closes it right after each purchase. True when
+    the close was sent."""
+    try:
+        CUO.CloseGump(vendor.Serial)
+        return True
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -2710,7 +2739,8 @@ def maybe_mark(rune):
 
 LOOT_WORDS = ("gold nugget", "gold brick", "rough stone", "bank check", "diamond", "ruby", "emerald", "sapphire",
               "amethyst", "citrine", "tourmaline", "amber", "pearl", "delicate scale")
-KEEP_WORDS = ("gold pan", "panning order", "tinker", "iron ingot", "runebook", "rune book", "spellbook", "gold coin",
+KEEP_WORDS = ("gold pan", "panning order", "resource order", "taming order", "tinker", "iron ingot", "runebook",
+              "rune book", "spellbook", "gold coin",
               "backpack", "bag", "pouch", "key", "book")
 START_PACK = set()
 NEVER_MOVED = ("storage", "book", "key")   # a storage key or an order book -- the Gold Panner key among them -- is never
@@ -2924,19 +2954,7 @@ def open_working_chest():
             log("Your working chest is not in sight of your Home rune -- the bank instead.", HUE_BAD)
         return None
     CHEST_MISSES[0] = 0
-    if Player.DistanceTo(chest) > CHEST_REACH_TILES:
-        walk_beside(chest, CHEST_REACH_TILES)
-    if Player.DistanceTo(chest) > CHEST_REACH_TILES:
-        # WALK TO IT IN THE HOUSE (owner, 10-15 12:3x: "Walk to it if we're in the house with it"): a closed door between
-        # the Home rune and the chest stops the client's own path -- the doors near are opened, the walk tried again,
-        # and each door put back as it was
-        doors = toggle_doors_near(CHEST_DOOR_TILES)
-        if doors:
-            walk_beside(chest, CHEST_REACH_TILES)
-            if Player.DistanceTo(chest) > CHEST_REACH_TILES:
-                walk_to(chest.Position.X, chest.Position.Y, chest.Position.Z)
-            toggle_doors(doors)
-    if Player.DistanceTo(chest) > CHEST_REACH_TILES:
+    if not reach_beside(chest, CHEST_REACH_TILES):
         x, y, z = here()
         log("Your working chest could not be reached from your Home rune (we stand at %d,%d,%d; it is at %d,%d,%d; "
             "tried %s; by it: %s) -- the bank instead." % (x, y, z, chest.Position.X, chest.Position.Y,
@@ -2960,6 +2978,24 @@ def open_working_chest():
 
 
 CHEST_REACH_TILES = 2
+
+
+def reach_beside(item, reach):
+    """Within `reach` of `item`, a thing by the Home rune: walked beside it, and when that fails the doors near opened,
+    the walk tried again and each door put back as it was. True there."""
+    if Player.DistanceTo(item) > reach:
+        walk_beside(item, reach)
+    if Player.DistanceTo(item) > reach:
+        # WALK TO IT IN THE HOUSE (owner, 10-15 12:3x: "Walk to it if we're in the house with it"): a closed door between
+        # the Home rune and the chest stops the client's own path -- the doors near are opened, the walk tried again,
+        # and each door put back as it was
+        doors = toggle_doors_near(CHEST_DOOR_TILES)
+        if doors:
+            walk_beside(item, reach)
+            if Player.DistanceTo(item) > reach:
+                walk_to(item.Position.X, item.Position.Y, item.Position.Z)
+            toggle_doors(doors)
+    return Player.DistanceTo(item) <= reach
 CHEST_ITEM_LIMIT = 125         # a container's items
 CHEST_FREE_KEPT = 15           # ... of which this many are left free: working space (owner, 10-15 10:3x)
 CHEST_REFUSALS = ("permission", "cannot access", "can't access", "not accessible", "is locked", "do not own")
@@ -3457,6 +3493,7 @@ def unload(take_orders=False):
             take_for_orders(chest, "your working chest")
         log("Unloaded %d stack(s) into your working chest; the pack holds %d of %d stones." % (
             n, Player.Weight, Player.MaxWeight))
+        file_orders_here()              # THE ORDER PICKUPS: we stand at Home
         if not overflow and not bank_stop_due(take_orders):
             return True
         take_orders = take_orders and bool(SETTINGS.get("bank_goods"))
@@ -3482,6 +3519,8 @@ def unload(take_orders=False):
     save_settings()
     if working_chest_on():
         fetch_orders_for_chest(bank)
+    if chest is None:
+        file_orders_at_home()           # THE ORDER PICKUPS: no working chest, so a stop at Home for them
     return True
 
 
@@ -4377,6 +4416,13 @@ def tracker_rows():
             rows.append(("Orders turned in at Harry: %d" % TRACK["orders"], HUE_GOOD))
         else:
             rows.append(("Orders: to the chest; another turns them in", HUE_GOOD))
+    if pickups_on():
+        _next = []
+        for spec in PICKUP_KINDS:
+            if spec["kind"] in PICKUP_BOOKS:
+                mins = max(0, int((pickup_next(spec) - time.time()) // 60))
+                _next.append("%s %s" % (spec["rune"].upper(), "now" if mins == 0 else "in %d min" % mins))
+        rows.append(("Order pickups: %s; %d this run" % (", ".join(_next), TRACK.get("picked", 0)), HUE_GOOD))
     try:
         usable, total, dead, risky, taken, banned = runes_status()
         rows.append(("Runes: %d of %d usable" % (usable, total), HUE_GOOD if usable >= STIFLED_RUNES else HUE_BAD))
@@ -4507,6 +4553,251 @@ def start_problems():
         out.append("No runes to pan from: your Account Runebook has no %s folder (and no %s folder)." % (
             " > ".join(CITY_FOLDER), OWN_FOLDER))
     return out
+
+
+# =============================================================================
+# THE ORDER PICKUPS (owner, 2026-10-17: "If there is a Home rune with a reachable RO or TO book, and a RO or TO rune in
+# the rune book, then the Panner will pickup those orders every 30 minutes and store them appropriate (either when we go
+# home for something else, or as the pack needs to for either weight or space)."). At the start each kind's rune is
+# looked for, at the top of the book or one folder down, and with one found the Home rune too; one stop at Home then
+# looks for each book in sight of the rune and walks beside it -- a kind whose book is not there, or not reached, is not
+# picked up this run, and says why. Every half hour (or when the vendor said it would have one) the vendor's Talk; the
+# orders ride in the pack and go into their book whenever an unload brings us Home, or -- with no working chest -- on a
+# stop at Home the unload makes for them.
+# =============================================================================
+
+PICKUP_KINDS = (
+    {"kind": "Resource Order", "rune": "ro", "word": "resource order", "book": "resource order book",
+     "vendor": ("resource gatherer",), "path_key": "ro_path", "clock": "ro_next", "test": "is_ro_rune"},
+    {"kind": "Taming Order", "rune": "to", "word": "taming order", "book": "taming order book",
+     "vendor": ("taming", "kennel", "animal trainer", "beastmaster", "tamer"), "path_key": "to_path", "clock": "to_next",
+     "test": "is_to_rune"},
+)
+PICKUP_EVERY_S = 30 * 60       # a vendor gives one order every half hour
+PICKUP_RETRY_S = 10 * 60       # a visit that could not ask (no recall, no vendor, no answer) is tried again after this
+PICKUP_VENDOR_TILES = 12       # the vendor stands this near his rune
+PICKUP_TALK_TILES = 1          # ... and is walked up to before the Talk (he wanders a few steps)
+PICKUP_ANSWER_S = 3            # his answer comes this soon after the Talk
+PICKUP_GOT = ("here is the order i desire",)
+PICKUP_LATER = ("an offer may be available in about", "you'll have to wait a few seconds",
+                "you can only receive one order every")
+BOOK_SEEK_TILES = 20           # an order book counts as at Home within this of where the Home rune lands us
+BOOK_REACH_TILES = 2
+PICKUP_RUNES = {}              # kind -> its rune, found at the start
+PICKUP_BOOKS = {}              # kind -> its book's serial, seen and reached at Home this run
+
+
+def is_ro_rune(rune):
+    low = base_name(rune["name"]).lower()
+    return low == "ro" or low.startswith("ro ")
+
+
+def is_to_rune(rune):
+    low = base_name(rune["name"]).lower()
+    return low == "to" or low.startswith("to ")
+
+
+def orders_carried(spec):
+    """The `spec` orders loose in the pack -- never its book."""
+    return [it for it in pack_items() if spec["word"] in name_of(it).lower() and "book" not in name_of(it).lower()]
+
+
+def book_in_sight(spec):
+    """`spec`'s order book lying within BOOK_SEEK_TILES of us, nearest first, or None."""
+    try:
+        f = Items.Filter()
+        f.Enabled = True
+        f.OnGround = True
+        f.RangeMax = BOOK_SEEK_TILES
+        books = [it for it in (Items.ApplyFilter(f) or []) if spec["book"] in name_of(it).lower()]
+    except Exception:
+        return None
+    books.sort(key=lambda it: Player.DistanceTo(it))
+    return books[0] if books else None
+
+
+def pickups_on():
+    return bool(PICKUP_BOOKS)
+
+
+def pickups_load():
+    """At the start: each kind's rune, the Home rune, and one stop at Home for the books (THE ORDER PICKUPS)."""
+    PICKUP_RUNES.clear()
+    PICKUP_BOOKS.clear()
+    for spec in PICKUP_KINDS:
+        rune = find_rune(globals()[spec["test"]], spec["path_key"])
+        if rune is not None:
+            PICKUP_RUNES[spec["kind"]] = rune
+    if not PICKUP_RUNES:
+        return
+    if HOME_RUNE[0] is None:
+        HOME_RUNE[0] = find_home_rune()
+    named = " and ".join("%s (%s)" % (k, base_name(r["name"])) for k, r in sorted(PICKUP_RUNES.items()))
+    if HOME_RUNE[0] is None:
+        log("Order pickups: your book has a rune for %s but no Home rune -- there is nowhere to keep the orders, so "
+            "none are picked up. Mark a rune named Home beside your order books." % named, HUE_BAD)
+        return
+    doing("Looking for your order books at Home")
+    if recall_rune(HOME_RUNE[0]) is not True:
+        log("Order pickups: could not recall to your Home rune to look for the order books -- none picked up this run.",
+            HUE_BAD)
+        return
+    for spec in PICKUP_KINDS:
+        if spec["kind"] not in PICKUP_RUNES:
+            continue
+        book = book_in_sight(spec)
+        if book is None:
+            log("Order pickups: no %s Book within %d tiles of your Home rune -- %ss are not picked up." % (
+                spec["kind"], BOOK_SEEK_TILES, spec["kind"]), HUE_BAD)
+        elif not reach_beside(book, BOOK_REACH_TILES):
+            log("Order pickups: your %s Book could not be reached from your Home rune (it is at %d,%d,%d) -- %ss are "
+                "not picked up." % (spec["kind"], book.Position.X, book.Position.Y, book.Position.Z, spec["kind"]),
+                HUE_BAD)
+        else:
+            PICKUP_BOOKS[spec["kind"]] = book.Serial
+            log("Order pickups: %ss from the %s rune every half hour, kept in your %s Book at Home." % (
+                spec["kind"], base_name(PICKUP_RUNES[spec["kind"]]["name"]), spec["kind"]))
+    file_orders_here()                  # what we brought goes in now, while we stand beside the books
+
+
+def pickup_next(spec):
+    try:
+        return float(SETTINGS.get(spec["clock"]) or 0)
+    except ValueError:
+        return 0.0
+
+
+def set_pickup_next(spec, when):
+    SETTINGS[spec["clock"]] = "%.0f" % when
+    save_settings()
+
+
+def pickups_due():
+    """The kinds whose vendor is worth a visit now -- not one whose trip would land in the invasion hour."""
+    now = time.time()
+    return [spec for spec in PICKUP_KINDS if spec["kind"] in PICKUP_BOOKS and now >= pickup_next(spec)
+            and not trip_risky(PICKUP_RUNES[spec["kind"]])]
+
+
+def vendor_answer(texts):
+    """("got" | "later", seconds or None) from the vendor's lines, or (None, None)."""
+    low = [t.lower() for t in texts]
+    if any(any(w in t for w in PICKUP_GOT) for t in low):
+        return "got", None
+    if any(any(w in t for w in PICKUP_LATER) for t in low):
+        for t in texts:
+            m = ORDER_WAIT_RE.search(t)
+            if m:
+                n, unit = int(m.group(1)), m.group(2).lower()
+                return "later", n * (3600 if unit.startswith("hour") else 60 if unit.startswith("minute") else 1)
+        return "later", None
+    return None, None
+
+
+def pickup_order(spec):
+    """One visit to `spec`'s vendor: recall to his rune, walk up to him, Talk, and read his answer. The clock is set
+    whatever happens, so a failed visit is tried again later, never at once."""
+    kind, rune = spec["kind"], PICKUP_RUNES[spec["kind"]]
+    doing("Picking up a %s" % kind)
+    if recall_rune(rune) is not True:
+        set_pickup_next(spec, time.time() + PICKUP_RETRY_S)
+        log("Order pickups: could not recall to the %s rune -- trying again in %d min." % (
+            base_name(rune["name"]), PICKUP_RETRY_S // 60), HUE_BAD)
+        return
+    vendors = []
+    t0 = time.time()
+    while not vendors and time.time() - t0 < VENDOR_LOOK_S:
+        vendors = find_vendors(spec["vendor"], PICKUP_VENDOR_TILES)
+        if not vendors:
+            Misc.Pause(500)
+    if not vendors:
+        set_pickup_next(spec, time.time() + PICKUP_RETRY_S)
+        log("Order pickups: no %s vendor within %d tiles of the %s rune (looked for the names: %s) -- trying again in "
+            "%d min." % (kind, PICKUP_VENDOR_TILES, base_name(rune["name"]), ", ".join(spec["vendor"]),
+                         PICKUP_RETRY_S // 60), HUE_BAD)
+        return
+    vendor = vendors[0]
+    approach(vendor, PICKUP_TALK_TILES)
+    before = len(orders_carried(spec))
+    stamp = newest_journal_timestamp()
+    if not context_pick(vendor.Serial, "talk"):
+        set_pickup_next(spec, time.time() + PICKUP_RETRY_S)
+        log("Order pickups: %s offered no Talk -- trying again in %d min." % (name_of(vendor), PICKUP_RETRY_S // 60),
+            HUE_BAD)
+        return
+    answer, wait = None, None
+    t0 = time.time()
+    while answer is None and time.time() - t0 < PICKUP_ANSWER_S:
+        answer, wait = vendor_answer(journal_texts_after(stamp))
+        if answer is None:
+            Misc.Pause(200)
+    got = len(orders_carried(spec)) - before
+    if answer == "got" or got > 0:
+        set_pickup_next(spec, time.time() + PICKUP_EVERY_S)
+        TRACK["picked"] = TRACK.get("picked", 0) + 1
+        log("Order pickups: a new %s from %s -- %d carried, for your %s Book." % (
+            kind, name_of(vendor), len(orders_carried(spec)), kind))
+    elif answer == "later":
+        set_pickup_next(spec, time.time() + (wait or PICKUP_EVERY_S))
+        log("Order pickups: %s has no %s yet -- asking again in about %d min." % (
+            name_of(vendor), kind, (wait or PICKUP_EVERY_S) // 60))
+    else:
+        set_pickup_next(spec, time.time() + PICKUP_RETRY_S)
+        log("Order pickups: %s did not answer the Talk (the journal says: %s) -- trying again in %d min." % (
+            name_of(vendor), " | ".join(journal_texts_after(stamp)[-3:]) or "nothing", PICKUP_RETRY_S // 60), HUE_BAD)
+
+
+def pickup_orders():
+    for spec in pickups_due():
+        if STOP_RUN[0]:
+            return
+        pickup_order(spec)
+
+
+def file_orders_here():
+    """Every order carried into its book -- we stand at Home. "Refill from stock" on the book takes them all; the count
+    in the pack decides what went in. A book that takes none is said, with the shard's words, and its kind stops being
+    picked up this run (there is nowhere to keep them)."""
+    for spec in PICKUP_KINDS:
+        serial = PICKUP_BOOKS.get(spec["kind"])
+        carried = orders_carried(spec)
+        if serial is None or not carried:
+            continue
+        book = Items.FindBySerial(serial)
+        if book is None or not reach_beside(book, BOOK_REACH_TILES):
+            log("Order pickups: your %s Book is not in reach from your Home rune now -- the %d carried stay in the pack." % (
+                spec["kind"], len(carried)), HUE_BAD)
+            continue
+        doing("Filing orders in your %s Book" % spec["kind"])
+        close_storage()
+        key_pace()
+        stamp = newest_journal_timestamp()
+        if not context_pick(book.Serial, "refill from stock"):
+            log("Order pickups: your %s Book offered no Refill from stock -- the %d carried stay in the pack." % (
+                spec["kind"], len(carried)), HUE_BAD)
+            continue
+        wait_for_gump_present(STORAGE_GUMP, 3000)
+        close_storage()
+        left = len(orders_carried(spec))
+        if left < len(carried):
+            log("Order pickups: %d %s(s) into your %s Book." % (len(carried) - left, spec["kind"], spec["kind"]))
+        else:
+            PICKUP_BOOKS.pop(spec["kind"], None)
+            log("Order pickups: your %s Book took none of the %d carried (the shard said: %s) -- they stay in the pack, "
+                "and no more %ss are picked up this run." % (
+                    spec["kind"], len(carried), " | ".join(journal_texts_after(stamp)[-3:]) or "nothing",
+                    spec["kind"]), HUE_BAD)
+
+
+def file_orders_at_home():
+    """An unload that did not bring us Home: Home for the orders carried, then into their books."""
+    if not any(orders_carried(spec) for spec in PICKUP_KINDS if spec["kind"] in PICKUP_BOOKS):
+        return
+    doing("Taking the orders Home")
+    if recall_rune(HOME_RUNE[0]) is not True:
+        log("Order pickups: could not recall to your Home rune -- the orders stay in the pack for now.", HUE_BAD)
+        return
+    file_orders_here()
 
 
 # =============================================================================
@@ -4825,6 +5116,7 @@ def run():
         HOME_RUNE[0] = find_home_rune()
     else:
         adopt_shared_chest()            # THE PANNERS SHARE: a chest another panner set by our Home rune
+    pickups_load()                      # THE ORDER PICKUPS: the RO and TO runes, Home, the books
     read_ethereal()                     # THE ETHEREAL'S BANK, known in advance
     if SETTINGS.get("eth_bank") == "1":
         log("Your Sosarian Ethereal opens the bank -- banking where we stand, no trip to a banker.")
@@ -4872,6 +5164,8 @@ def run():
                 pause(5000)
                 continue
             fails = 0
+        if pickups_on() and pickups_due():
+            pickup_orders()             # THE ORDER PICKUPS: each vendor on its own clock
         if orders_on() and ask_due() and not trip_risky(PO_RUNE[0]):   # NO TRIP INTO THE HOUR: after it
             # THE BULK TURN-IN (owner, 10-15 13:0x: "wait 30 minutes from the last turn in, get order upon arrival, and
             # then do a bulk turn in"): a turn-in's ask starts Harry's half hour again, so turning in whenever an order

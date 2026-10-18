@@ -23,6 +23,11 @@ Press Start and it pans for gold, town after town, from the runes every Account 
 - **Gold Panning Orders.** Nuggets stay in the pack. When it fills, they go into your carried orders where you stand;
   a pack still full goes to Harry, who trades nuggets up, takes every order the pack can finish (never a partial) and
   gives the next. Orders paying the most rough stone a nugget are filled first.
+- **Picks up Resource and Taming Orders** every 30 minutes, when your book has an RO or TO rune beside the vendor and
+  your order book stands by your Home rune. At start it checks it can reach each book; the orders ride in the pack and
+  go into their book whenever it is home anyway, or on a stop at home when the pack is full. A kind whose book is
+  missing, out of reach or refusing is skipped, and the log says why.
+- **Closes the shop window** it opened to buy from the tinker, right after each purchase.
 - **Rides long walks** on an ethereal mount statue from your pack, when the walk is over 40 tiles.
 - **Stays safe.** Lost hits, poison, or a red or orange mobile nearby, and it leaves for the next rune; that spot goes
   on a list no panner walks near again. Town Invasions start every even hour (UTC) in Cove, Delucia, Jhelom, Minoc,
@@ -46,6 +51,9 @@ Press Start and it pans for gold, town after town, from the runes every Account 
 - Optional: a rune named **Home** beside a chest of yours, to unload there instead of the bank.
 - Optional: a **Sosarian Ethereal** in your backpack with its bank unlocked -- the bank opens where you stand. The
   script reads the statue in your pack, so it learns this while you are not riding it.
+- Optional, for **Resource and Taming Order pickups:** a rune named **RO** beside the Resource Gatherer and/or **TO**
+  beside the Taming Order vendor (at the top of your book or one folder down), a rune named **Home**, and your Resource
+  Order Book and/or Taming Order Book within 20 tiles of that Home rune.
 
 ## Mark your own runes
 
