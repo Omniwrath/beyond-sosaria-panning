@@ -80,6 +80,7 @@ Open them from the start screen or the panning window's **Options** button. Ever
 | Stay out of Town Invasions | On by default. Keeps out of the invasion towns around each invasion hour, as described above. |
 | Set working chest | Target a chest at home. With a rune named Home in your book, everything panned goes there instead of the bank. |
 | Use the bank | Shown while a working chest is set: forget the chest and use the bank again. |
+| Check for updates | Off by default. On: at start and every few hours it looks for a newer version and shows what changed in a window of its own, panning on meanwhile. Update puts it in place at the next stop between runes. |
 | Rescan | Reads your Account Runebook again -- after you add, move or rename a rune. |
 
 ## Its data folder
@@ -98,7 +99,12 @@ on the route, delete its line in `Blacklist.txt`.
 
 ## Update
 
-Download the file again and replace the old one. Your settings live in the script's data folder, so they survive an
+With **Check for updates** on, press **Update** when the update window shows a newer version. An update is taken only
+when its signature checks -- proof the author made it -- and the old version is saved in the data folder. With
+RazorEnhanced's **Auto Script Reload** ticked (Scripting tab) the new version starts by itself; without it, press
+Refresh, then Play.
+
+Or download the file again and replace the old one. Your settings live in the script's data folder, so they survive an
 update. The [Releases](../../releases) page lists what changed in each version.
 
 ## Problems and ideas
