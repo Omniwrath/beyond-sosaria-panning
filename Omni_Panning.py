@@ -89,7 +89,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.0.8"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.0.9"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -2399,6 +2399,10 @@ def pan_at_rune(rune):
         while True:
             tracker_tick()
             read_broadcasts()
+            if UPD["apply"]:            # AN UPDATE PRESSED IS DONE AT ONCE: between two sifts, nothing in hand
+                update_safe_point()
+                if STOP_RUN[0]:
+                    break
             x, y, _z = here()
             m = Player.Map
             reserved = others_near(m, x, y) is not None
@@ -4545,7 +4549,9 @@ def wait_out_invasion():
 # THE UPDATE ARRIVES MID-RUN (owner, 2026-10-17: "why not offer it mid run?"): at start and every UPDATE_EVERY_S, the
 # newest release of UPDATE_REPO is read from GitHub. One newer than SCRIPT_VERSION, and not skipped, is shown in a window
 # of its own -- what changed, and Update / Not now / Skip this version -- and panning goes on; the press is read from
-# every wait (options_check()). Update is done at the next stop between runes, never mid-visit: the release's script and
+# every wait (options_check()). Update is done at once -- AN UPDATE PRESSED IS DONE AT ONCE (owner, 10-17: "if the user
+# presses update, they probably expect a more immediate response"): between two sifts, or between runes; a trip under
+# way (a bank, Harry) finishes first, never cut in half. The release's script and
 # its signature are downloaded, and taken only when the signature checks against UPDATE_PUBLIC_KEY (the author signs
 # each release with a key that never leaves the author's machine, so a download changed anywhere on the way is refused)
 # and the script compiles. The old file is kept in the data folder, the new one goes in its place. RazorEnhanced's Auto
@@ -4624,43 +4630,59 @@ def signature_ok(data, sig_text):
         return False
 
 
+NOTES_TEXT_COLOR = "#E6E6E6"     # THE NOTES READ PLAINLY: light text on the window's dark ground
+NOTES_HEAD_COLOR = "#FFD966"     # ... headings in a soft gold, never bold
+
+
 def notes_html(body):
-    """A release's notes (GitHub's Markdown) as the gump's HTML: headings bold, bullets, **bold** and *italic*."""
+    """A release's notes (GitHub's Markdown) as the gump's HTML.
+    NO ENTITIES (2026-10-17: the 1.0.7 window showed "&nbsp;&nbsp;&bull;" as text -- the client's gump HTML reads no
+    entities): a bullet is "- ", a nested one "-- ", and a < or > in the notes becomes ( or ) so no tag is opened.
+    THE NOTES READ PLAINLY (owner, 2026-10-17: "the text is a little hard to read, mostly the bold"): no bold or italic --
+    the client's bold is heavy at this size -- light text on the dark window, headings in NOTES_HEAD_COLOR, by the
+    <BASEFONT COLOR> tag the shard's own event cards use."""
     out = []
     for line in (body or "").replace("\r", "").split("\n"):
-        line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").rstrip()
+        line = line.replace("<", "(").replace(">", ")").rstrip()
         indent = len(line) - len(line.lstrip(" "))
         line = line.strip()
+        line = re.sub(r"\*\*(.+?)\*\*", r"\1", line)
+        line = re.sub(r"(?<![*\w])\*(?!\s)(.+?)\*(?![*\w])", r"\1", line)
         if line.startswith("#"):
-            line = "<b>%s</b>" % line.lstrip("#").strip()
-        elif line.startswith(("- ", "* ")):
-            line = "&nbsp;" * (2 + indent) + "&bull; " + line[2:]
-        line = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", line)
-        line = re.sub(r"(?<![*\w])\*(?!\s)(.+?)\*(?![*\w])", r"<i>\1</i>", line)
+            line = "<BASEFONT COLOR=%s>%s</BASEFONT>" % (NOTES_HEAD_COLOR, line.lstrip("#").strip())
+        elif line:
+            if line.startswith(("- ", "* ")):
+                line = ("-- " if indent else "- ") + line[2:]
+            line = "<BASEFONT COLOR=%s>%s</BASEFONT>" % (NOTES_TEXT_COLOR, line)
         out.append(line)
     return "<br>".join(out)
 
 
 def update_window(version, body):
     """The release's notes and Update / Not now / Skip this version, in a window of its own -- nothing waits on it."""
-    UPD["turn"] += 1
-    UPD["ids"] = UPDATE_BUTTON_SETS[UPD["turn"] % 2]
     try:
         r = Gumps.GetGumpData(UPDATE_GUMP_ID)
         UPD["last"] = getattr(r, "buttonid", None) if r is not None else None
     except Exception:
         UPD["last"] = None
+    # THE ANSWER OUTLIVES THE RUN (2026-10-17 17:59: test 3's Update was never read -- RazorEnhanced still held test 2's
+    # Update, the same id, from the run before; taking turns only within a run gave both runs' first offer one set):
+    # the set this offer uses is never the one the held answer belongs to
+    UPD["turn"] += 1
+    UPD["ids"] = next((ids for ids in UPDATE_BUTTON_SETS[UPD["turn"] % 2:] + UPDATE_BUTTON_SETS[:UPD["turn"] % 2]
+                       if UPD["last"] not in ids), UPDATE_BUTTON_SETS[0])
     upd, later, skip = UPD["ids"]
     title = "%s %s is available -- you have %s" % (SCRIPT_TITLE, version, SCRIPT_VERSION)
     width = max(UPDATE_WIDTH, EDGE_PX + 20 + text_px(title))
     height = 60 + UPDATE_NOTES_HEIGHT + 70
     gd = new_screen(width, height, title)
-    Gumps.AddHtml(gd, 20, 45, width - 40, UPDATE_NOTES_HEIGHT, notes_html(body) or "No notes came with it.", True,
-                  True)
-    button_row(gd, 20, height - 40, [
-        (upd, "Update", "Download it, check its signature, and put it in place of this one at the next stop."),
-        (later, "Not now", "Ask again later."),
-        (skip, "Skip this version", "Do not ask about %s again." % version)])
+    Gumps.AddHtml(gd, 20, 45, width - 40, UPDATE_NOTES_HEIGHT, notes_html(body) or "No notes came with it.", False,
+                  True)                 # THE NOTES READ PLAINLY: no parchment
+    row = [(skip, "Skip this version", "Do not ask about %s again." % version),   # THE MAIN BUTTON ON THE RIGHT (owner,
+           (later, "Not now", "Ask again later."),                               # 10-17: "the 'continue' option or
+           (upd, "Update", "Download it, check its signature, and put it in place of this one at the next stop.")]
+    row_px = sum(BUTTON_PX + text_px(label) + BUTTON_GAP_PX for _b, label, _t in row) - BUTTON_GAP_PX   # 'accept'
+    button_row(gd, max(20, width - EDGE_PX - row_px), height - 40, row)   # option tends to be on the bottom right")
     Gumps.SendGump(UPDATE_GUMP_ID, Player.Serial, 200, 120, gd.gumpDefinition, gd.gumpStrings)
 
 
@@ -4703,7 +4725,7 @@ def update_poll():
     version = UPD["offer"][0]
     if pressed == upd:
         UPD["apply"] = True
-        log("Updating to %s at the next stop between runes." % version)
+        log("Updating to %s now -- between this sift and the next (after a trip under way)." % version)
     elif pressed == skip:
         UPD["offer"] = None
         SETTINGS["skip_update"] = version
@@ -4735,6 +4757,8 @@ def update_safe_point():
     try:
         written = apply_update(version, data)
     except Exception as err:
+        if "abort" in ("%s %s" % (type(err).__name__, err)).lower():
+            raise                       # THE RELOAD IS NO FAILURE: Auto Script Reload ending this run on the new file
         log("The update could not be written (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
         return
     if not written:
@@ -4764,8 +4788,11 @@ def apply_update(version, data):
         return False
     backup = data_path("%s.%s.bak" % (os.path.basename(here), SCRIPT_VERSION))
     File.Copy(here, backup, True)
-    File.WriteAllBytes(here, data)
+    # THE RELOAD IS NO FAILURE (2026-10-17 17:38: "The update could not be written (Thread was being aborted.)" -- the
+    # write had landed; Auto Script Reload saw the file change at once and ended this run mid-step). Said before the
+    # write, since a reload may leave no after.
     log("Updated to %s. The old version is kept as %s." % (version, backup), HUE_GOOD)
+    File.WriteAllBytes(here, data)
     return True
 
 
