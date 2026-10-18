@@ -89,7 +89,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.0.10"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.0.11"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -892,7 +892,6 @@ def open_bank_here(banker):
 # found in the backpack by its name, its unlock read off its own properties, the menu entry picked by its words, never
 # its place. No statue, no unlock, or no bank box: the walk to a banker, as before.
 ETHEREAL_NAME = "sosarian ethereal"
-ETHEREAL_BANK_PROP = "can open bank: yes"
 ETHEREAL_BANK_ENTRY = "open bankbox"
 ETHEREAL_WAIT_MS = 3000
 
@@ -907,19 +906,27 @@ def ethereal_statue():
 
 def read_ethereal():
     """KNOWN IN ADVANCE (owner, 2026-10-16 00:5x: "make sure we've stored that data in advance" -- "you can't read it from
-    the mount if we're riding it"): the Sosarian Ethereal's "Can Open Bank" read off the statue while it is in the pack
+    the mount if we're riding it"): the Sosarian Ethereal's bank unlock read off the statue while it is in the pack
     -- at the start, before a ride, after getting off -- and kept in the options (eth_bank), so the bank step knows
     before it starts and never gets off a mount only to look. No statue in the pack: what was kept stands."""
+    # THE MENU SAYS IT (2026-10-17: our panner walked to a banker to deposit checks beside its unlocked Sosarian Ethereal --
+    # every panner on file read eth_bank=0: the unlock was judged from the tooltip's words "can open bank: yes", a guess
+    # never seen on a real statue). The statue's own menu is the proof, as the Omni Tamer's remote banking reads it: an
+    # "Open Bankbox" entry there is the unlock. The menu is asked for without being shown.
     statue = ethereal_statue()
     if statue is None:
         return
     try:
-        props = " | ".join(" ".join(p.lower().split()) for p in (Items.GetPropStringList(statue.Serial) or []))
+        try:
+            entries = Misc.WaitForContext(statue.Serial, ETHEREAL_WAIT_MS, False) or []
+        except TypeError:
+            entries = Misc.WaitForContext(statue.Serial, ETHEREAL_WAIT_MS) or []
     except Exception:
-        props = ""
-    if "can open bank" not in props:
-        return
-    known = "1" if ETHEREAL_BANK_PROP in props else "0"
+        entries = []
+    if not entries:
+        return                          # no menu came: what was kept stands
+    known = "1" if any(ETHEREAL_BANK_ENTRY in (getattr(e, "Entry", None) or str(e) or "").lower()
+                       for e in entries) else "0"
     if SETTINGS.get("eth_bank") != known:
         SETTINGS["eth_bank"] = known
         save_settings()
