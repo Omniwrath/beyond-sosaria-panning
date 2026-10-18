@@ -89,7 +89,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.0.9"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.0.10"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -4754,11 +4754,13 @@ def update_safe_point():
     if not signature_ok(data, sig):
         log("The update's signature does not check -- it was NOT taken. Running %s." % SCRIPT_VERSION, HUE_BAD)
         return
+    # THE RELOAD IS NEVER CAUGHT (2026-10-17 18:25: 1.0.8 caught Auto Script Reload's stop as "could not be written", and
+    # the stop, surfacing again after the catch, showed RazorEnhanced's own "ERROR ... PythonContext doesn't provide a
+    # suitable public constructor ... Thread was being aborted"). Only a file's own errors -- the disk, its permissions --
+    # are caught here; the reload's stop passes straight through, as it does everywhere else in the script.
     try:
         written = apply_update(version, data)
-    except Exception as err:
-        if "abort" in ("%s %s" % (type(err).__name__, err)).lower():
-            raise                       # THE RELOAD IS NO FAILURE: Auto Script Reload ending this run on the new file
+    except EnvironmentError as err:
         log("The update could not be written (%s) -- running %s." % (err, SCRIPT_VERSION), HUE_BAD)
         return
     if not written:
