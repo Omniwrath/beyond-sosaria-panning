@@ -73,6 +73,11 @@
 #     of their size where it stands; a pack still full goes to Harry, who trades nuggets up, takes
 #     every order it can FINISH (never a partial) and gives the next. The orders paying the most
 #     rough stone a nugget go first. Harry hands out a new order every 30 minutes.
+#   * Gold Panner Storage: with one in your backpack it keeps your nuggets, bricks and Gold Panning
+#     Orders -- every unload files them into it, and the best orders and the nuggets they need come
+#     back out to fill. The first time it sees the storage, the nuggets, bricks and orders kept in your
+#     bank and your working chest move into it. Your gold pans are [keyguarded first, so the storage
+#     never takes them. With an Ingot Storage in your backpack too, the gems go into that.
 #   * Order pickups: with an RO or TO rune, a Home rune and that kind's book by the Home rune, it
 #     checks at start that it can reach each book, then asks the vendor for an order every 30
 #     minutes (sooner or later when he says when he will have one). The orders ride in the pack and
@@ -88,8 +93,8 @@
 #     and takes no trip that would land in one, until the shard names the town, then keeps out of
 #     that one until it is saved.
 #   * Several panners: each keeps 40 tiles from the water another has panned in the last 3 hours,
-#     from its runes and from where it works -- the towns are shared, the shores are not. A new
-#     panner whose Home rune stands by another's working chest shares that chest.
+#     from its runes and from where it works -- the towns are shared, the shores are not. Each
+#     panner turns in its own orders.
 #
 # =============================================================================
 
@@ -98,7 +103,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.0.12"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.1.0"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -2971,10 +2976,7 @@ def open_working_chest():
     if refused:
         forget_chest("refused us (\"%s\")" % refused)
         return None
-    chest = Items.FindBySerial(serial) or chest
-    if not any(r[0] == "0x%X" % chest.Serial for r in chest_rows()):
-        register_chest(chest)           # THE PANNERS SHARE: on the shared list, for another panner to find
-    return chest
+    return Items.FindBySerial(serial) or chest
 
 
 CHEST_REACH_TILES = 2
@@ -3004,12 +3006,11 @@ CHEST_MISSES_FORGET = 3        # the chest gone from by the Home rune this many 
 CHECKS_TO_BANK = 3             # with a working chest, bank checks wait in the pack until this many, then go to the bank
 
 
-# THE PANNERS SHARE (owner, 10-15 10:4x: "If a fresh run detects a Home rune near the existing working chest, default to
-# trying to share that. Also have them avoid using panning spots near the already marked runes of another panner" --
-# "With multiple panners, designate one to handle turn ins."). Three small shared files: the working chests set (where
-# each stands, and the panner that turns in the orders kept in it), every panner's marked spots, and the rune each is
-# working now. A panner never marks or pans within PAN_RUNE_GAP of another's marked rune or of where another works.
-CHESTS_FILE = "Chests.txt"     # chest serial, map, x, y, z, the turn-in panner's serial
+# THE PANNERS SHARE (owner, 10-15 10:4x: "have them avoid using panning spots near the already marked runes of another
+# panner"). Small shared files: every panner's marked spots, and the rune each is working now. A panner never marks or
+# pans within PAN_RUNE_GAP of another's marked rune or of where another works. EACH TURNS IN ITS OWN (owner, 2026-10-21
+# 16:3x: "let's get rid of the standalone feature that allows 1 character to do all the turn ins"): the shared working
+# chest and its one turn-in panner are gone -- a working chest is one panner's own.
 SPOTS_FILE = "Spots.txt"       # panner serial, map, x, y, rune name
 WORKING_FILE = "Working.txt"   # panner serial, map, x, y, when
 # NOT THE SAME AREAS (owner, 2026-10-16 00:3x: "they should just not mark or pan the same areas" -- "not all towns are
@@ -3025,7 +3026,6 @@ AREA_CELL = 10                 # one row per panner a cell this many tiles acros
 # looks for water from its rune, so each holds the stretch it can reach. At 20 (PAN_RUNE_GAP, our own runes' spacing)
 # they leapfrogged: 10-16 00:53 one started at 1413,1696, 21 tiles from the other's 00:39 sifts on the same shore.
 PANNER_RESERVE_TILES = 40
-CHEST_SHARE_TILES = 20         # a Home rune this near a chest set by another panner shares that chest
 WORKING_FRESH_S = 180          # a "working here" this old is a panner that stopped
 SHARED_READ_S = 15             # the shared files are read again at most this often
 _shared_cache = {}
@@ -3057,49 +3057,11 @@ def write_rows(name, rows):
         pass
 
 
-def chest_rows(fresh=False):
-    return [r for r in read_rows(CHESTS_FILE, fresh=fresh) if len(r) >= 6]
-
-
-def register_chest(chest):
-    """The chest set here, on the shared list -- its turn-in panner kept, or this one when it has none."""
-    serial = "0x%X" % chest.Serial
-    rows = chest_rows(fresh=True)
-    old = next((r for r in rows if r[0] == serial), None)
-    turnin = old[5] if old and old[5] else my_id()
-    p = chest.Position
-    write_rows(CHESTS_FILE, [r for r in rows if r[0] != serial] + [[serial, Player.Map, p.X, p.Y, p.Z, turnin]])
-
-
-def turnin_panner():
-    """THE ONE WHO TURNS IN: the panner named on the shared list for our working chest -- ourselves with no chest (each
-    panner turns in its own), or when the chest has nobody yet (the first to ask takes it)."""
-    serial = SETTINGS.get("chest") or ""
-    if not serial:
-        return my_id()
-    rows = chest_rows()
-    row = next((r for r in rows if r[0] == serial), None)
-    if row is None:
-        return my_id()
-    if not row[5]:
-        rows = chest_rows(fresh=True)
-        row = next((r for r in rows if r[0] == serial), row)
-        if not row[5]:
-            row[5] = my_id()
-            write_rows(CHESTS_FILE, rows)
-    if turnin_taken_over(row[5]):       # A GONE PANNER LETS GO
-        return my_id()
-    return row[5]
-
-
-# A GONE PANNER LETS GO (2026-10-17; owner: "similar to changing control over who handles orders, we should also handover
-# those spots if they aren't being used"). A panner moved to a working chest whose turn-in panner had left panning 39
-# hours before -- it would have put its orders in the chest for a panner that never came -- and found Britain 2-5,
-# Nujel'm 2-4 and Cove 2 still marked by the two panners that left. A panner with no work on the shared lists
-# (Working.txt, Areas.txt) in PANNER_GONE_S is gone: its turn-ins pass to the panner sharing the chest (said once), and
-# its marked runes are free (others_near()). Back at work, its runes are its own again.
+# A GONE PANNER LETS GO (2026-10-17; owner: "we should also handover those spots if they aren't being used"): Britain
+# 2-5, Nujel'm 2-4 and Cove 2 were still marked by two panners that had left. A panner with no work on the shared lists
+# (Working.txt, Areas.txt) in PANNER_GONE_S is gone: its marked runes are free (others_near()). Back at work, its runes
+# are its own again.
 PANNER_GONE_S = 2 * 3600
-TURNIN_TAKEN_SAID = [False]
 
 
 def panner_gone(who):
@@ -3121,57 +3083,6 @@ def panner_last_seen(who):
             except (ValueError, IndexError):
                 continue
     return last
-
-
-def turnin_taken_over(named):
-    """A GONE PANNER LETS GO: `named` (the chest's turn-in panner) is gone -- this panner takes the turn-ins. True when it
-    did."""
-    if not panner_gone(named):
-        return False
-    seen = panner_last_seen(named)
-    set_turnin_panner(my_id())
-    if not TURNIN_TAKEN_SAID[0]:
-        TURNIN_TAKEN_SAID[0] = True
-        log("The turn-in panner for your working chest (%s) has not panned %s -- this panner takes over the turn-ins "
-            "at Harry." % (named, "in %.0f hours" % ((time.time() - seen) / 3600.0) if seen else "at all"))
-    return True
-
-
-def handles_turnins():
-    return not working_chest_on() or turnin_panner() == my_id()
-
-
-def set_turnin_panner(who):
-    serial = SETTINGS.get("chest") or ""
-    rows = chest_rows(fresh=True)
-    for r in rows:
-        if r[0] == serial:
-            r[5] = who
-    write_rows(CHESTS_FILE, rows)
-
-
-def adopt_shared_chest():
-    """A panner with no working chest whose Home rune stands by a chest another panner set: that chest is ours too."""
-    if chest_serial() is not None or not chest_rows():
-        return
-    home = HOME_RUNE[0] or find_home_rune()
-    HOME_RUNE[0] = home
-    c = (home or {}).get("coord") or []
-    if len(c) < 2:
-        return
-    for r in chest_rows():
-        try:
-            same_map = int(r[1]) == rune_map(home)
-            near = cheb(int(r[2]), int(r[3]), c[0], c[1]) <= CHEST_SHARE_TILES
-        except ValueError:
-            continue
-        if same_map and near:
-            SETTINGS["chest"] = r[0]
-            save_settings()
-            chest_state_reset()
-            log("Sharing the working chest by your Home rune (another panner set it)%s." % (
-                "" if r[5] and r[5] != my_id() else " -- this panner turns in the orders"))
-            return
 
 
 def register_spots():
@@ -3340,6 +3251,8 @@ def bank_stop_due(take_orders):
     nuggets finished nothing -- it is judged now by what the bank held at its last look."""
     if sum(1 for it in pack_items() if is_check(it)) >= CHECKS_TO_BANK:
         return True
+    if not store_moved("bank"):
+        return True                     # THE MOVE IN, ONCE: the bank's panning goes into the storage
     banked = SETTINGS.get("bank_goods") or ""
     if not (take_orders and banked and orders_on()):
         return False
@@ -3477,26 +3390,411 @@ def bank_checks():
     bank_refused("checks")                  # EVERY MOVE IS CHECKED
 
 
+# =============================================================================
+# THE PANNER'S STORAGE (owner, 2026-10-21 16:3x: "let's get standalone moved to using it if one is found ... if a
+# standalone character was using a previous method before getting the book, make sure it does a cleanup, pulling all
+# gold/orders from the bank or their storage"). Harry's Gold Panner Storage, carried: its window lists the Resources --
+# Small, Medium, Large, Bricks -- each with a withdraw button (the amount in text entry 0), "Fill from backpack" (every
+# nugget, brick and order deed carried goes in -- a [keyguarded item stays), and a row per stored order whose button
+# takes that deed out into the pack (15 a page; the next page's arrow shows while more follow). Our own panners' storage
+# code (the Stealth panners' PanKeyStore), here for every player. With one in the pack:
+#   * every unload files the nuggets, bricks and orders into it -- after every gold pan carried is [keyguarded, so Fill
+#     never takes a pan (a toggle with no mark on the item: the shard's reply is the record, kept in GuardedPans.txt);
+#   * the best DEEDS_KEPT orders come back out to carry (carry_rank()), and on the way to Harry the nuggets they need
+#     (store_take_for_orders(), the bank's own plan_take() rule) -- the working chest and the bank keep no nuggets,
+#     bricks or orders, and no order is stored elsewhere or trashed for room;
+#   * THE MOVE IN, ONCE: the nuggets, bricks and orders the bank and the working chest held come out and into the
+#     storage at the first visit to each after it is found, a pack's worth at a time until none is left.
+# =============================================================================
+
+PAN_STORE_NAME = "gold panner storage"
+PAN_STORE_TITLE = "Gold Panner Storage"
+PAN_STORE_FILL = 2
+PAN_STORE_TIER_BUTTON = {"small": 20, "medium": 21, "large": 22, "brick": 23}
+PAN_STORE_ROW = 1000
+PAN_STORE_NEXT = 5
+PAN_STORE_ROW_RE = re.compile(r"\{\s*button\s+\d+\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s*\}")
+PAN_STORE_RESOURCES = {"small": "small", "medium": "medium", "large": "large", "bricks": "brick"}
+PAN_STORE_WAIT_RE = re.compile(r"You must wait ([\d.]+) more seconds?", re.I)
+PAN_STORE_OPEN_MS = 5000        # the shard's answer to opening it, at most
+PAN_STORE_LANDED_MS = 3000      # what a withdraw sends into the pack, at most
+GUARDED_PANS_FILE = "GuardedPans.txt"
+KEYGUARD_COMMAND = "[keyguard"
+KEYGUARD_TARGET_MS = 3000
+KEYGUARD_REPLY_MS = 2000
+STORE_SAID = {}
+
+
+def pan_store():
+    """THE PANNER'S STORAGE carried, or None."""
+    for it in pack_items():
+        if PAN_STORE_NAME in name_of(it).lower():
+            return it
+    return None
+
+
+def store_lines(gid):
+    try:
+        raw = Gumps.GetLineList(gid, False) or []
+    except TypeError:
+        raw = Gumps.GetLineList(gid) or []
+    return [re.sub(r"<[^>]+>", "", str(l)).strip() for l in raw]
+
+
+def store_window(store, open_it=True):
+    """The storage's window id -- opened when it is not up (and `open_it`) -- or None."""
+    def find():
+        for gid in (Gumps.AllGumpIDs() or []):
+            lines = store_lines(gid)
+            if lines and lines[0] == PAN_STORE_TITLE:
+                return gid
+        return None
+    gid = find()
+    if gid is None and open_it:
+        key_pace()
+        Items.UseItem(store.Serial)
+        t0 = time.time()
+        while gid is None and (time.time() - t0) * 1000 < PAN_STORE_OPEN_MS:
+            Misc.Pause(100)
+            gid = find()
+        if gid is not None:
+            Misc.Pause(300)
+    return gid
+
+
+def store_close(store):
+    gid = store_window(store, open_it=False)
+    if gid is not None:
+        try:
+            Gumps.CloseGump(gid)
+        except Exception:
+            pass
+
+
+def store_press(store, button, amount=None):
+    """One press on the storage's window; the shard's "You must wait N more seconds" waited out and pressed once more.
+    True when it was sent."""
+    for _try in range(2):
+        gid = store_window(store)
+        if gid is None:
+            return False
+        stamp = newest_journal_timestamp()
+        key_pace()
+        if amount is None:
+            Gumps.SendAction(gid, button)
+        else:
+            Gumps.SendAdvancedAction(gid, button, [], [0], [str(int(amount))])
+        Misc.Pause(1200)
+        wait = next((float(m.group(1)) for m in (PAN_STORE_WAIT_RE.search(t) for t in journal_texts_after(stamp)) if m),
+                    None)
+        if wait is None:
+            return True
+        Misc.Pause(int(wait * 1000) + 200)
+    return True
+
+
+def store_read_page(store, page):
+    """The page on screen: ({tier: pieces}, [((page, button), tier, wanted, gathered)], a next page shows) -- or None."""
+    gid = store_window(store)
+    if gid is None:
+        return None
+    lines = store_lines(gid)
+    try:
+        layout = str(Gumps.GetGumpRawLayout(gid) or "")
+    except Exception:
+        layout = ""
+    found = PAN_STORE_ROW_RE.findall(layout)
+    buttons = [int(bt) for _y, bt in sorted(((int(y), bt) for y, bt in found if PAN_STORE_ROW <= int(bt) < 100000),
+                                            key=lambda t: t[0])]
+    more = any(int(bt) == PAN_STORE_NEXT for _y, bt in found)
+    res = {}
+    for i, l in enumerate(lines[:16]):
+        t = PAN_STORE_RESOURCES.get(l.lower())
+        if t and i + 1 < len(lines) and lines[i + 1].replace(",", "").isdigit():
+            res[t] = int(lines[i + 1].replace(",", ""))
+    orders = []
+    k = lines.index("Completed") + 1 if "Completed" in lines else len(lines)
+    row = 0
+    while k + 2 < len(lines):
+        tier = tier_of(lines[k])
+        if tier is None or not (lines[k + 1].isdigit() and lines[k + 2].isdigit()):
+            break
+        button = buttons[row] if row < len(buttons) else PAN_STORE_ROW + row
+        orders.append(((page, button), tier, int(lines[k + 1]), int(lines[k + 2])))
+        row += 1
+        k += 5
+    return res, orders, more
+
+
+def store_read(store):
+    """({tier: pieces}, every stored order) -- each page's arrow pressed while it shows, the window closed after so the
+    next open is page one."""
+    res, orders, page = None, [], 0
+    while True:
+        got = store_read_page(store, page)
+        if got is None:
+            break
+        r, rows, more = got
+        res = r if res is None else res
+        orders.extend(rows)
+        if not more or not rows:
+            break
+        store_press(store, PAN_STORE_NEXT)
+        page += 1
+    if page:
+        store_close(store)
+    return res or {}, orders
+
+
+def store_count(tier):
+    return count_tier(tier)
+
+
+def store_take(store, tier, n):
+    """Up to `n` of `tier` out into the pack, never past PACK_PCT of our weight. How many came."""
+    before = store_count(tier)
+    room = int((Player.MaxWeight * PACK_PCT / 100.0 - Player.Weight) // GOOD_STONES[tier])
+    amount = min(int(n), room)
+    if amount <= 0 or not store_press(store, PAN_STORE_TIER_BUTTON[tier], amount):
+        return 0
+    t0 = time.time()
+    while store_count(tier) <= before and (time.time() - t0) * 1000 < PAN_STORE_LANDED_MS:
+        Misc.Pause(150)
+    return max(0, store_count(tier) - before)
+
+
+def store_take_deed(store, ref):
+    """The stored order `ref` -- (page, its row button) -- out into the pack: the deed that came, or None."""
+    page, button = ref
+    had = set(it.Serial for it in pack_items())
+    if page:
+        store_close(store)
+        for _p in range(page):
+            if not store_press(store, PAN_STORE_NEXT):
+                return None
+    if not store_press(store, button):
+        return None
+    t0 = time.time()
+    while (time.time() - t0) * 1000 < PAN_STORE_LANDED_MS:
+        new = [it for it in pack_items() if it.Serial not in had and read_deed(it) is not None]
+        if new:
+            return new[0]
+        Misc.Pause(150)
+    return None
+
+
+def guarded_pans():
+    try:
+        with open(char_path(GUARDED_PANS_FILE)) as f:
+            return set(int(l.strip(), 16) for l in f if l.strip())
+    except Exception:
+        return set()
+
+
+def keyguard_item(serial):
+    """[keyguard on one backpack item, read from the shard's reply -- True once it says Guarded. An "Un-Guarded" answer
+    (it was guarded already) is pressed once more."""
+    for _try in range(2):
+        stamp = newest_journal_timestamp()
+        Player.ChatSay(0, KEYGUARD_COMMAND)
+        if not Target.WaitForTarget(KEYGUARD_TARGET_MS, False):
+            return False
+        Target.TargetExecute(serial)
+        t0 = time.time()
+        said = ""
+        while (time.time() - t0) * 1000 < KEYGUARD_REPLY_MS:
+            Misc.Pause(100)
+            said = " | ".join(journal_texts_after(stamp)).lower()
+            if "un-guarded" in said or "unguarded" in said:
+                break
+            if "is now guarded" in said:
+                return True
+        if not ("un-guarded" in said or "unguarded" in said):
+            return False
+    return False
+
+
+def guard_pans():
+    """Every gold pan carried [keyguarded, so the storage's Fill never takes one -- True when all are."""
+    have = guarded_pans()
+    pans = [it for it in pack_items() if re.search(r"\bgold pans?\b", name_of(it).lower())]
+    added, ok = [], True
+    for it in pans:
+        if it.Serial in have:
+            continue
+        if keyguard_item(it.Serial):
+            added.append(it.Serial)
+        else:
+            ok = False
+            break
+    if added and ensure_char_dir():
+        try:
+            with open(char_path(GUARDED_PANS_FILE), "a") as f:
+                for sr in added:
+                    f.write("0x%X\n" % sr)
+        except Exception:
+            pass
+        log("%d gold pan(s) [keyguarded -- your Gold Panner Storage never takes them." % len(added))
+    if not ok and not STORE_SAID.get("guard"):
+        STORE_SAID["guard"] = True
+        log("A gold pan would not [keyguard -- your Gold Panner Storage is not used until it does (its Fill would take "
+            "the pan).", HUE_BAD)
+    return ok
+
+
+def store_fill(store):
+    """Fill from backpack: the nuggets, bricks and orders carried go into the storage."""
+    return store_press(store, PAN_STORE_FILL)
+
+
+class StoreRow(object):
+    """A stored order, ranked beside the carried ones (carry_rank() reads d[0].Serial)."""
+    def __init__(self, ref):
+        self.ref, self.Serial = ref, -(ref[0] * 100000 + ref[1])
+
+
+def store_carry_best(store):
+    """The best DEEDS_KEPT orders, carried and stored together, are the ones carried -- each stored one among them
+    taken out, one at a time (the rows renumber after a take)."""
+    taken = 0
+    while True:
+        carried = order_deeds()
+        if len(carried) >= DEEDS_KEPT:
+            break
+        res, rows = store_read(store)
+        if not rows:
+            break
+        stock = dict((t, count_tier(t) + res.get(t, 0)) for t in TIERS)
+        stored = [(StoreRow(ref), got, wanted, tier) for ref, tier, wanted, got in rows]
+        best = [d for d in carry_rank(carried + stored, stock)[:DEEDS_KEPT] if isinstance(d[0], StoreRow)]
+        if not best or store_take_deed(store, best[0][0].ref) is None:
+            break
+        taken += 1
+    store_close(store)
+    if taken:
+        log("%d order(s) out of your Gold Panner Storage to carry." % taken)
+    return taken
+
+
+def store_take_for_orders(store):
+    """THE STORAGE FILLS THE ORDERS: the nuggets the carried orders need out of the storage -- the bank's own rule
+    (plan_take(): each order only when the pack and the storage together can finish it, never past PACK_PCT)."""
+    deeds = order_deeds()
+    if not deeds:
+        return 0
+    res, _rows = store_read(store)
+    have = dict((t, count_tier(t)) for t in TIERS)
+    stored = dict((t, res.get(t, 0)) for t in TIERS)
+    room = Player.MaxWeight * PACK_PCT / 100.0 - Player.Weight
+    take, planned = {}, 0
+    for d in sorted(deeds, key=fill_first):
+        if d[1] >= d[2]:
+            continue
+        h, b, t = dict(have), dict(stored), dict(take)
+        if not plan_take(d[3], d[2] - d[1], h, b, t):
+            continue
+        weight = sum((t[k] - take.get(k, 0)) * GOOD_STONES[k] for k in t)
+        if weight > room:
+            continue
+        have, stored, take, room, planned = h, b, t, room - weight, planned + 1
+    got = dict((tier, store_take(store, tier, n)) for tier, n in take.items() if n > 0)
+    store_close(store)
+    if any(got.values()):
+        log("From your Gold Panner Storage for %d order(s): %s." % (planned, ", ".join(
+            "%d %s" % (n, k) for k, n in sorted(got.items(), key=lambda kv: TIERS.index(kv[0])) if n)))
+    return planned
+
+
+def store_moved(where):
+    store = pan_store()
+    return store is None or SETTINGS.get("store_moved_" + where) == "0x%X" % store.Serial
+
+
+def store_move_in(store, container, where, label):
+    """THE MOVE IN, ONCE: the nuggets, bricks and panning orders in `container` -- its top, and one bag deep for the
+    orders -- out and into the storage, a pack's worth at a time, until none is left there (then it is not looked at
+    again for this storage). A round that moves nothing, or a Fill that leaves them in the pack, ends it for now."""
+    if store_moved(where):
+        return True
+    total = 0
+    while True:
+        top = contents(container)
+        items = [it for it in top if tier_of(name_of(it)) or read_deed(it) is not None]
+        for bag in [it for it in top if getattr(it, "IsContainer", False)]:
+            try:
+                Items.WaitForContents(bag, 1500)
+                items.extend(it for it in contents(Items.FindBySerial(bag.Serial) or bag) if read_deed(it) is not None)
+            except Exception:
+                pass
+        if not items:
+            SETTINGS["store_moved_" + where] = "0x%X" % store.Serial
+            save_settings()
+            log("Moved %d stack(s) of nuggets, bricks and orders from %s into your Gold Panner Storage -- none left "
+                "there." % (total, label) if total else "Nothing of your panning in %s -- your Gold Panner Storage "
+                "keeps it from now on." % label)
+            return True
+        moved = []
+        for it in items:
+            if Player.Weight >= Player.MaxWeight * PACK_PCT / 100.0:
+                break
+            Items.Move(it.Serial, Player.Backpack.Serial, int(it.Amount or 1))
+            Misc.Pause(700)
+            moved.append(it.Serial)
+        if not moved:
+            log("Your pack has no room to move %s's panning into your Gold Panner Storage -- the next visit goes on."
+                % label, HUE_BAD)
+            return False
+        store_fill(store)
+        store_close(store)
+        left = [it for it in pack_items() if it.Serial in set(moved)]
+        total += len(moved) - len(left)
+        if left:
+            log("Your Gold Panner Storage did not take %d stack(s) from %s -- the next visit goes on." % (
+                len(left), label), HUE_BAD)
+            return False
+
+
 def unload(take_orders=False):
-    """To the nearest bank, and everything panned into it -- then, with `take_orders`, what the carried orders need
-    back out (THE BANK FILLS THE ORDERS). True once done."""
+    """INGOT STORAGE's gems; THE PANNER'S STORAGE when one is carried -- its Fill first, the best orders and their
+    nuggets back out last; between them _unload(): the working chest, the bank. True once done."""
     key_absorb()                        # INGOT STORAGE: the gems we found go into the key, not the bank
+    store = pan_store()
+    if store is not None and not guard_pans():
+        store = None
+    if store is not None:
+        store_fill(store)
+        store_close(store)
+    done = _unload(take_orders, store)
+    if store is not None:
+        store_carry_best(store)
+        if take_orders:
+            store_take_for_orders(store)
+    return done
+
+
+def _unload(take_orders, store):
+    """To the nearest bank, and everything panned into it -- then, with `take_orders`, what the carried orders need
+    back out (THE BANK FILLS THE ORDERS). With THE PANNER'S STORAGE (`store`) the chest and the bank keep no nuggets,
+    bricks or orders: their own are moved into it once (THE MOVE IN, ONCE). True once done."""
     chest = open_working_chest() if working_chest_on() else None
     overflow = []
     if chest is not None:
         n, overflow = into_chest(chest)  # THE CHECKS GO TO THE BANK -- and NOTHING PANNED IS TRASHED: what the chest
                                          # has no room for goes there too
         chest = Items.FindBySerial(chest.Serial) or chest
-        prune_deeds(chest)              # the orders past those carried: into the chest while it has room
-        if take_orders:
-            take_deeds_from_chest(chest)  # ONE TURNS IN: the best orders in the chest, every panner's, come along
-            take_for_orders(chest, "your working chest")
+        if store is not None:
+            store_move_in(store, chest, "chest", "your working chest")
+        else:
+            prune_deeds(chest)          # the orders past those carried: into the chest while it has room
+            if take_orders:
+                take_deeds_from_chest(chest)  # the best orders in our chest come along
+                take_for_orders(chest, "your working chest")
         log("Unloaded %d stack(s) into your working chest; the pack holds %d of %d stones." % (
             n, Player.Weight, Player.MaxWeight))
         file_orders_here()              # THE ORDER PICKUPS: we stand at Home
-        if not overflow and not bank_stop_due(take_orders):
+        if not overflow and not bank_stop_due(take_orders) and (store is None or store_moved("bank")):
             return True
-        take_orders = take_orders and bool(SETTINGS.get("bank_goods"))
+        take_orders = take_orders and bool(SETTINGS.get("bank_goods")) and store is None
     doing("Unloading at a bank")
     bank = open_a_bank()
     if bank is None:
@@ -3507,7 +3805,11 @@ def unload(take_orders=False):
     log("Unloaded %d stack(s) at the bank; the pack holds %d of %d stones." % (n, Player.Weight, Player.MaxWeight))
     if bank_refused("what you panned"):     # EVERY MOVE IS CHECKED
         return False
-    if chest is None and not working_chest_on() and extra_mode() == "store":
+    if store is not None:
+        Misc.Pause(600)
+        store_move_in(store, Player.Bank or bank, "bank", "your bank")   # THE MOVE IN, ONCE
+        take_orders = False             # THE PANNER'S STORAGE fills the orders, not the bank
+    elif chest is None and not working_chest_on() and extra_mode() == "store":
         Misc.Pause(600)
         prune_deeds(Player.Bank or bank)   # EXTRA ORDERS: the bank stores them, and its best come along
     if take_orders:
@@ -3517,7 +3819,7 @@ def unload(take_orders=False):
     SETTINGS["bank_goods"] = ",".join("%s:%d" % (t, sum(int(it.Amount or 1) for it in items))   # THE BANK IS DRAINED
                                       for t, items in sorted(bank_goods(bank).items()))         # until none is left
     save_settings()
-    if working_chest_on():
+    if working_chest_on() and store is None:
         fetch_orders_for_chest(bank)
     if chest is None:
         file_orders_at_home()           # THE ORDER PICKUPS: no working chest, so a stop at Home for them
@@ -3617,8 +3919,8 @@ def store_room(container):
 def order_room():
     """EXTRA ORDERS: room for one more order -- fewer than DEEDS_KEPT carried, or a place for the extras by the
     player's choice."""
-    if len(order_deeds()) < DEEDS_KEPT:
-        return True
+    if len(order_deeds()) < DEEDS_KEPT or pan_store() is not None:
+        return True                     # THE PANNER'S STORAGE holds every order past those carried
     mode = extra_mode()
     if mode == "trash":
         return trash_bag() is not None
@@ -3673,8 +3975,8 @@ def count_tier(t):
 
 
 def take_deeds_from_chest(chest):
-    """ONE TURNS IN: the turn-in panner carries the best of the orders kept in the shared chest -- its own and the other
-    panners' -- up to DEEDS_KEPT, judged against the nuggets in the pack and the chest together."""
+    """The best of the orders kept in our working chest come along, up to DEEDS_KEPT, judged against the nuggets in the
+    pack and the chest together (EACH TURNS IN ITS OWN)."""
     carried = order_deeds()
     room = DEEDS_KEPT - len(carried)
     if room <= 0:
@@ -3805,7 +4107,7 @@ def fill_at_harry_due():
     """FILL AT HARRY (owner, 10-15 17:4x: "Do it"): the pack is still full after FILL IN THE FIELD, and the carried
     orders would take enough of its nuggets, traded up at Harry, to leave it well under its weight setting -- then
     Harry, not home (17:04-17:36: every trip home carried ~185 small nuggets while ten medium and large orders waited)."""
-    if not (orders_on() and handles_turnins()) or ask_due() or trip_risky(PO_RUNE[0]):
+    if not orders_on() or ask_due() or trip_risky(PO_RUNE[0]):
         return False                    # on the half hour THE BULK TURN-IN goes to Harry anyway; NO TRIP INTO THE HOUR
     have = dict((t, count_tier(t)) for t in TIERS)
     before = dict(have)
@@ -3930,8 +4232,10 @@ def prune_deeds(chest=None):
     one, then one the pack can finish, then the most rough stone a nugget, then the fewest still wanted -- and the rest,
     worst first, go into the Trash Bag. With a working chest they go into it while it has room (`chest` open now), and
     wait in the pack for it between unloads; only what it has no room for is trashed."""
+    if pan_store() is not None:
+        return                          # THE PANNER'S STORAGE keeps every order -- none is stored elsewhere or trashed
     deeds = order_deeds()
-    kept = DEEDS_KEPT if handles_turnins() else 0    # ONE TURNS IN: a panner that does not keeps none
+    kept = DEEDS_KEPT
     mode = extra_mode()
     if chest is not None and mode != "stop":
         CHEST_ROOM_SEEN[0] = max(0, chest_room(chest) if mode == "trash" else store_room(chest))
@@ -4072,8 +4376,6 @@ def visit_harry():
         asked = True
         ask_order(harry)
         Misc.Pause(1000)
-    if not handles_turnins():
-        return True                     # ONE TURNS IN: our order goes to the shared chest for the turn-in panner
     for _pass in range(20):
         deeds = order_deeds()
         if not deeds:
@@ -4203,7 +4505,6 @@ def set_working_chest():
     SETTINGS["chest"] = "0x%X" % chest.Serial
     save_settings()
     chest_state_reset()
-    register_chest(chest)
     if HOME_RUNE[0] is None:
         HOME_RUNE[0] = find_home_rune()
     if HOME_RUNE[0] is None:
@@ -4257,11 +4558,12 @@ def settings_screen():
     """The options, behind the start screen's Options button and the panning window's. Saved on every button."""
     while True:
         chest = chest_serial()
-        mine = handles_turnins()
+        store = pan_store()
         title = "%s -- options" % SCRIPT_TITLE
         chest_text = "Working chest: %s" % ("set -- used instead of the bank" if chest else "none -- the bank is used")
         home_text = "Home rune: %s" % ("found" if HOME_RUNE[0] else "none named Home in your Account Runebook")
-        turn_text = "Turn-ins at Harry: %s" % ("this panner" if mine else "another panner sharing the working chest")
+        turn_text = "Gold Panner Storage: %s" % ("carried -- your nuggets, bricks and orders are kept in it" if store
+                                                  else "none carried -- the working chest or the bank is used")
         row = [(BTN_RESCAN, "Rescan", "Read your Account Runebook again (your Home and PO runes, your route)."),
                (BTN_SET_CHEST, "Set working chest",
                 "Target a chest at home to unload into instead of the bank (needs a rune named Home).")]
@@ -4315,8 +4617,6 @@ def settings_screen():
         elif resp.buttonid == BTN_SET_CHEST:
             set_working_chest()
         elif resp.buttonid == BTN_USE_BANK:
-            if working_chest_on() and turnin_panner() == my_id():
-                set_turnin_panner("")    # another panner sharing it takes the turn-ins
             SETTINGS["chest"] = ""
             save_settings()
             chest_state_reset()
@@ -4412,10 +4712,7 @@ def tracker_rows():
                 TRACK["finds"]), HUE_GOOD)]
     if orders_on():
         rows.append(("Earned: %s gold, %d rough stone(s)" % ("{:,}".format(TRACK["gold"]), TRACK["rough"]), HUE_GOOD))
-        if handles_turnins():
-            rows.append(("Orders turned in at Harry: %d" % TRACK["orders"], HUE_GOOD))
-        else:
-            rows.append(("Orders: to the chest; another turns them in", HUE_GOOD))
+        rows.append(("Orders turned in at Harry: %d" % TRACK["orders"], HUE_GOOD))
     if pickups_on():
         _next = []
         for spec in PICKUP_KINDS:
@@ -5114,8 +5411,6 @@ def run():
     PO_RUNE[0] = PO_RUNE[0] or find_po_rune()
     if chest_serial() is not None:
         HOME_RUNE[0] = find_home_rune()
-    else:
-        adopt_shared_chest()            # THE PANNERS SHARE: a chest another panner set by our Home rune
     pickups_load()                      # THE ORDER PICKUPS: the RO and TO runes, Home, the books
     read_ethereal()                     # THE ETHEREAL'S BANK, known in advance
     if SETTINGS.get("eth_bank") == "1":
@@ -5171,8 +5466,7 @@ def run():
             # then do a bulk turn in"): a turn-in's ask starts Harry's half hour again, so turning in whenever an order
             # is ready gives the timed order away. Every half hour: the orders' nuggets out of the bank or the working
             # chest, then Harry -- the timed order first, then every order ready, the next asked after each
-            if handles_turnins():
-                unload(take_orders=True)
+            unload(take_orders=True)
             visit_harry()
             if working_chest_on() or not pack_full():
                 bank_checks()           # THE CHECKS BANKED AT ONCE
