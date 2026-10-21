@@ -23,6 +23,10 @@ Press Start and it pans for gold, town after town, from the runes every Account 
 - **Gold Panning Orders.** Nuggets stay in the pack. When it fills, they go into your carried orders where you stand;
   a pack still full goes to Harry, who trades nuggets up, takes every order the pack can finish (never a partial) and
   gives the next. Orders paying the most rough stone a nugget are filled first.
+- **Uses your Gold Panner Storage** when one is in your backpack: every unload files your nuggets, bricks and orders
+  into it, and the best 10 orders and the nuggets they need come back out to fill. Extra orders stay in it -- none go to
+  the bank, the chest or a Trash Bag. Your gold pans are [keyguarded first, so the storage never takes them. The first
+  time it sees the storage, what you kept in your bank and working chest -- nuggets, bricks and orders -- moves into it.
 - **Picks up Resource and Taming Orders** every 30 minutes, when your book has an RO or TO rune beside the vendor and
   your order book stands by your Home rune. At start it checks it can reach each book; the orders ride in the pack and
   go into their book whenever it is home anyway, or on a stop at home when the pack is full. A kind whose book is
@@ -35,8 +39,7 @@ Press Start and it pans for gold, town after town, from the runes every Account 
   would land in one, until the shard names the town -- then it keeps out of that town until it is saved.
 - **Plays well with others.** Several of your characters can run it from the same Scripts folder. Each keeps 40 tiles
   from the water another has panned in the last 3 hours, from its runes and from where it is working: the towns are
-  shared, the shores are not. Characters whose Home runes stand by the same working chest share it, and one of them
-  turns in the orders kept there.
+  shared, the shores are not. Each character turns in its own orders.
 
 ## What you need
 
@@ -49,6 +52,8 @@ Press Start and it pans for gold, town after town, from the runes every Account 
   Trammel > Cities, walks to Harry and marks it for you. **If your book no longer has that default Minoc rune, mark
   your own PO rune beside Harry.**
 - Optional: a rune named **Home** beside a chest of yours, to unload there instead of the bank.
+- Optional: a **Gold Panner Storage** in your backpack, to keep your nuggets, bricks and orders in it; an **Ingot
+  Storage** too, and the gems you find go into that.
 - Optional: a **Sosarian Ethereal** in your backpack with its bank unlocked -- the bank opens where you stand. The
   script reads the statue in your pack, so it learns this while you are not riding it.
 - Optional, for **Resource and Taming Order pickups:** a rune named **RO** beside the Resource Gatherer and/or **TO**
