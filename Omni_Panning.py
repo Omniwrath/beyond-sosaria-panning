@@ -74,10 +74,13 @@
 #     every order it can FINISH (never a partial) and gives the next. The orders paying the most
 #     rough stone a nugget go first. Harry hands out a new order every 30 minutes.
 #   * Gold Panner Storage: with one in your backpack it keeps your nuggets, bricks and Gold Panning
-#     Orders -- every unload files them into it, and the best orders and the nuggets they need come
-#     back out to fill. The first time it sees the storage, the nuggets, bricks and orders kept in your
-#     bank and your working chest move into it. Your gold pans are [keyguarded first, so the storage
-#     never takes them. With an Ingot Storage in your backpack too, the gems go into that.
+#     Orders -- every unload files them into it. At Harry the storage is the bank: every order in it
+#     or in your pack that the storage and the pack together can finish is taken out one at a time,
+#     the nuggets it needs come out of the storage and are traded up on Harry, and it is filled and
+#     turned in; what is left goes back in. A few orders ride along for filling in the field. The
+#     first time it sees the storage, the nuggets, bricks and orders kept in your bank and your
+#     working chest move into it. Your gold pans are [keyguarded first, so the storage never takes
+#     them. With an Ingot Storage in your backpack too, the gems go into that.
 #   * Order pickups: with an RO or TO rune, a Home rune and that kind's book by the Home rune, it
 #     checks at start that it can reach each book, then asks the vendor for an order every 30
 #     minutes (sooner or later when he says when he will have one). The orders ride in the pack and
@@ -103,7 +106,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.1.0"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.1.1"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -3400,8 +3403,8 @@ def bank_checks():
 # code (the Stealth panners' PanKeyStore), here for every player. With one in the pack:
 #   * every unload files the nuggets, bricks and orders into it -- after every gold pan carried is [keyguarded, so Fill
 #     never takes a pan (a toggle with no mark on the item: the shard's reply is the record, kept in GuardedPans.txt);
-#   * the best DEEDS_KEPT orders come back out to carry (carry_rank()), and on the way to Harry the nuggets they need
-#     (store_take_for_orders(), the bank's own plan_take() rule) -- the working chest and the bank keep no nuggets,
+#   * the best DEEDS_KEPT orders come back out to carry (carry_rank()) for FILL IN THE FIELD; at Harry the storage is
+#     the bank (THE STORAGE IS THE BANK AT HARRY, visit_harry()) -- the working chest and the bank keep no nuggets,
 #     bricks or orders, and no order is stored elsewhere or trashed for room;
 #   * THE MOVE IN, ONCE: the nuggets, bricks and orders the bank and the working chest held come out and into the
 #     storage at the first visit to each after it is found, a pack's worth at a time until none is left.
@@ -3667,42 +3670,17 @@ def store_carry_best(store):
         stock = dict((t, count_tier(t) + res.get(t, 0)) for t in TIERS)
         stored = [(StoreRow(ref), got, wanted, tier) for ref, tier, wanted, got in rows]
         best = [d for d in carry_rank(carried + stored, stock)[:DEEDS_KEPT] if isinstance(d[0], StoreRow)]
-        if not best or store_take_deed(store, best[0][0].ref) is None:
+        if not best:
+            break
+        if store_take_deed(store, best[0][0].ref) is None:
+            log("An order (%d %s) did not come out of your Gold Panner Storage to carry -- the next unload tries again."
+                % (best[0][2], best[0][3]), HUE_BAD)
             break
         taken += 1
     store_close(store)
     if taken:
         log("%d order(s) out of your Gold Panner Storage to carry." % taken)
     return taken
-
-
-def store_take_for_orders(store):
-    """THE STORAGE FILLS THE ORDERS: the nuggets the carried orders need out of the storage -- the bank's own rule
-    (plan_take(): each order only when the pack and the storage together can finish it, never past PACK_PCT)."""
-    deeds = order_deeds()
-    if not deeds:
-        return 0
-    res, _rows = store_read(store)
-    have = dict((t, count_tier(t)) for t in TIERS)
-    stored = dict((t, res.get(t, 0)) for t in TIERS)
-    room = Player.MaxWeight * PACK_PCT / 100.0 - Player.Weight
-    take, planned = {}, 0
-    for d in sorted(deeds, key=fill_first):
-        if d[1] >= d[2]:
-            continue
-        h, b, t = dict(have), dict(stored), dict(take)
-        if not plan_take(d[3], d[2] - d[1], h, b, t):
-            continue
-        weight = sum((t[k] - take.get(k, 0)) * GOOD_STONES[k] for k in t)
-        if weight > room:
-            continue
-        have, stored, take, room, planned = h, b, t, room - weight, planned + 1
-    got = dict((tier, store_take(store, tier, n)) for tier, n in take.items() if n > 0)
-    store_close(store)
-    if any(got.values()):
-        log("From your Gold Panner Storage for %d order(s): %s." % (planned, ", ".join(
-            "%d %s" % (n, k) for k, n in sorted(got.items(), key=lambda kv: TIERS.index(kv[0])) if n)))
-    return planned
 
 
 def store_moved(where):
@@ -3766,9 +3744,7 @@ def unload(take_orders=False):
         store_close(store)
     done = _unload(take_orders, store)
     if store is not None:
-        store_carry_best(store)
-        if take_orders:
-            store_take_for_orders(store)
+        store_carry_best(store)         # FILL IN THE FIELD's orders; Harry takes the rest out himself
     return done
 
 
@@ -4170,14 +4146,17 @@ def stone_rate(tier, wanted):
     return stones / float(wanted * SMALL_WORTH[tier])
 
 
-def trade_up(tier, n, harry):
-    """At least `n` of `tier` in the pack, trading the tier below on Harry in whole lots. How many now."""
+def trade_up(tier, n, harry, store=None):
+    """At least `n` of `tier` in the pack -- with THE PANNER'S STORAGE (`store`) its own size out of it first, never past
+    PACK_PCT -- trading the tier below on Harry in whole lots. How many now."""
     have = count_tier(tier)
+    if have < n and store is not None and store_take(store, tier, n - have):
+        have = count_tier(tier)
     if have >= n or tier not in TIER_LOTS:
         return have
     lower = TIERS[TIERS.index(tier) - 1]
     lots = TIER_LOTS[tier]
-    got = trade_up(lower, (n - have) * lots, harry)
+    got = trade_up(lower, (n - have) * lots, harry, store)
     give = (min(got, (n - have) * lots) // lots) * lots
     left = give
     for st in goods().get(lower, []):
@@ -4365,11 +4344,22 @@ def reach_harry():
     return mobs[0].Serial
 
 
+# THE STORAGE IS THE BANK AT HARRY (owner, 2026-10-21 23:0x: "go ahead and build it as 1.1.1"). 1.1.0 handed the stored
+# orders back out at an unload (store_carry_best()) and the nuggets for them on the way to Harry, and Harry looked only
+# at what was carried: a player's log showed every start with "No Gold Panning Order carried", 32 orders and 10,906 small
+# nuggets in the storage, and not one order filled -- the carry-out had brought none back, and nothing said why. Our own
+# panners' way (StealthRE/native_harvest.py fill_pan_orders()) here: beside Harry, the storage's orders are orders and
+# its nuggets are stock beside the pack's; of those the storage and the pack can finish -- traded up in whole lots -- the
+# next by the one rule (fill_first()) comes out of the storage, its nuggets come out as trade_up() needs them, and it is
+# filled and turned in, one at a time. What is left goes back into the storage, and FILL IN THE FIELD's orders out again.
 def visit_harry():
     harry = reach_harry()
     if harry is None:
         return False
     doing("Filling orders at Harry")
+    store = pan_store()
+    if store is not None and not guard_pans():
+        store = None                    # its Fill would take a pan: the storage is not used (unload() says so)
     turned = 0
     asked = False
     if ask_due():
@@ -4378,6 +4368,12 @@ def visit_harry():
         Misc.Pause(1000)
     for _pass in range(20):
         deeds = order_deeds()
+        stock = dict((t, count_tier(t)) for t in TIERS)
+        if store is not None:           # THE STORAGE IS THE BANK AT HARRY: its orders and its nuggets too
+            res, rows = store_read(store)
+            for t in TIERS:
+                stock[t] += res.get(t, 0)
+            deeds = deeds + [(StoreRow(ref), got, wanted, tier) for ref, tier, wanted, got in rows]
         if not deeds:
             if not asked:
                 asked = True
@@ -4385,16 +4381,25 @@ def visit_harry():
                 Misc.Pause(1000)
                 continue
             break
-        stock = dict((t, count_tier(t)) for t in TIERS)
         full = [d for d in deeds if d[1] >= d[2]]
         ready = full[:1] or [d for d in deeds if can_make(d[3], d[2] - d[1], stock)]
         if not ready:
+            if store is not None:
+                log("No order the storage and the pack can finish (%s; they hold %s) -- none touched." % (
+                    ", ".join("%d/%d %s" % (d[1], d[2], d[3]) for d in deeds[:12]) + (" ..." if len(deeds) > 12 else ""),
+                    ", ".join("%d %s" % (stock.get(t, 0), t) for t in TIERS)))
             break
         deed, got, wanted, tier = min(ready, key=lambda d: (d[1] < d[2],) + fill_first(d))   # a full one, then the rule
+        if isinstance(deed, StoreRow):  # THE STORAGE IS THE BANK AT HARRY: the stored order out into the pack first
+            deed = store_take_deed(store, deed.ref)
+            if deed is None:
+                log("The stored order (%d / %d %s) did not come out of your Gold Panner Storage -- none touched." % (
+                    got, wanted, tier), HUE_BAD)
+                break
         for _round in range(6):
             if got >= wanted:
                 break
-            if trade_up(tier, wanted - got, harry) <= 0:
+            if trade_up(tier, wanted - got, harry, store) <= 0:
                 break
             for st in goods().get(tier, []):
                 clear_cursor()
@@ -4432,7 +4437,16 @@ def visit_harry():
         ask_order(harry)
     if turned:
         log("%d order(s) turned in at Harry." % turned)
-    prune_deeds()
+    if store is not None:               # what is left back into the storage, FILL IN THE FIELD's orders out again
+        store_fill(store)
+        store_close(store)
+        res, rows = store_read(store)
+        store_close(store)
+        log("Your Gold Panner Storage holds %s and %d order(s)." % (
+            ", ".join("%s %s" % ("{:,}".format(res.get(t, 0)), t) for t in TIERS), len(rows)))
+        store_carry_best(store)
+    else:
+        prune_deeds()
     return True
 
 
@@ -5433,7 +5447,8 @@ def run():
         log("No Gold Pan: %s -- stopping." % no_pan_reason(), HUE_BAD)
         return
     if orders_on() and not order_deeds():
-        log("No Gold Panning Order carried -- to Harry for one first.")
+        log("No Gold Panning Order carried -- to Harry for one first." if pan_store() is None else
+            "To Harry first: the orders in your Gold Panner Storage, and a new one.")
         visit_harry()
     index = 0
     fails = 0

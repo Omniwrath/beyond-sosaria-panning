@@ -24,8 +24,10 @@ Press Start and it pans for gold, town after town, from the runes every Account 
   a pack still full goes to Harry, who trades nuggets up, takes every order the pack can finish (never a partial) and
   gives the next. Orders paying the most rough stone a nugget are filled first.
 - **Uses your Gold Panner Storage** when one is in your backpack: every unload files your nuggets, bricks and orders
-  into it, and the best 10 orders and the nuggets they need come back out to fill. Extra orders stay in it -- none go to
-  the bank, the chest or a Trash Bag. Your gold pans are [keyguarded first, so the storage never takes them. The first
+  into it. At Harry the storage works as your bank: every order in it that the storage and your pack can finish comes
+  out one at a time, the nuggets it needs come out and are traded up, and it is filled and turned in. A few orders ride
+  along for filling in the field. Extra orders stay in it -- none go to the bank, the chest or a Trash Bag. Your
+  gold pans are [keyguarded first, so the storage never takes them. The first
   time it sees the storage, what you kept in your bank and working chest -- nuggets, bricks and orders -- moves into it.
 - **Picks up Resource and Taming Orders** every 30 minutes, when your book has an RO or TO rune beside the vendor and
   your order book stands by your Home rune. At start it checks it can reach each book; the orders ride in the pack and
