@@ -106,7 +106,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.1.1"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.1.2"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -3465,13 +3465,27 @@ def store_window(store, open_it=True):
     return gid
 
 
+# THE CLOSE THE SHARD HEARS (1.1.2, a player disconnected at every second order out of the storage): RazorEnhanced's
+# CloseGump() closes the window on the client only -- the shard kept it open, on the page the read left it, and the
+# next open showed that page again; a press meant for another page was a button the window did not have, and the shard
+# disconnects for that. The window is closed with its close button (0), as a right-click does, so the shard closes it
+# too and the next open is page one.
 def store_close(store):
     gid = store_window(store, open_it=False)
     if gid is not None:
         try:
-            Gumps.CloseGump(gid)
+            Gumps.SendAction(gid, 0)
         except Exception:
             pass
+
+
+def store_buttons(gid):
+    """Every button the storage's window shows, by its id."""
+    try:
+        layout = str(Gumps.GetGumpRawLayout(gid) or "")
+    except Exception:
+        layout = ""
+    return set(int(b) for _y, b in PAN_STORE_ROW_RE.findall(layout))
 
 
 def store_press(store, button, amount=None):
@@ -3480,6 +3494,9 @@ def store_press(store, button, amount=None):
     for _try in range(2):
         gid = store_window(store)
         if gid is None:
+            return False
+        # NO PRESS THE WINDOW DOES NOT SHOW (1.1.2): the shard disconnects a press of a button its window does not have
+        if button != 0 and button not in store_buttons(gid):
             return False
         stamp = newest_journal_timestamp()
         key_pace()
