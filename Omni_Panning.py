@@ -106,7 +106,7 @@ import re
 import time
 
 SCRIPT_TITLE = "Omni Panning"
-SCRIPT_VERSION = "1.1.2"       # THE SIGNED UPDATE compares the newest release with this
+SCRIPT_VERSION = "1.1.3"       # THE SIGNED UPDATE compares the newest release with this
 
 HUE_GOOD = 68
 HUE_BAD = 33
@@ -3548,7 +3548,11 @@ def store_read_page(store, page):
 
 def store_read(store):
     """({tier: pieces}, every stored order) -- each page's arrow pressed while it shows, the window closed after so the
-    next open is page one."""
+    next open is page one.
+    PAGE ONE FIRST (1.1.3; our own panner, 10-23: 137 orders stored and two weighed -- an order taken from the last page
+    left the window there, and the next read took that page for page one; every other order out of sight): the window
+    is closed before the read too."""
+    store_close(store)
     res, orders, page = None, [], 0
     while True:
         got = store_read_page(store, page)
